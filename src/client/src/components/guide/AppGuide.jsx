@@ -24,6 +24,12 @@ function AppGuide() {
   const [shareResult, setShareResult] = useState("");
   const [activeProgram, setActiveProgram] = useState(null);
   const [scheduleProgram, setScheduleProgram] = useState(null);
+  const [espnLeague, setEspnLeague] = useState("nfl");
+  const [espnQuery, setEspnQuery] = useState("");
+  const [espnGames, setEspnGames] = useState([]);
+  const [selectedEspn, setSelectedEspn] = useState(null);
+  const [espnCache, setEspnCache] = useState(null);
+  const [espnSearching, setEspnSearching] = useState(false);
 
   async function loadData() {
     const [channelsResponse, epgResponse, stateResponse] = await Promise.all([
@@ -151,7 +157,7 @@ function AppGuide() {
       const response = await api(`/api/static-shares/${targetShare.id}/events`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ programId: program.id }),
+        body: JSON.stringify({ programId: program.id, espn: selectedEspn }),
       });
       if (!response.ok) {
         const payload = await response.json();
@@ -162,6 +168,28 @@ function AppGuide() {
     setShareResult("Added selected event(s) to the static schedule.");
     setSchedulePickerOpen(false);
     navigate(`/admin/s/${targetShare.admin_ref || `static-${targetShare.id}`}`);
+  }
+
+  async function searchEspnGames() {
+    setEspnSearching(true);
+    setEspnCache(null);
+    try {
+      const start = selectedPrograms[0] ? eventStart(selectedPrograms[0]) - 7 * 24 * 60 * 60 : Math.floor(Date.now() / 1000);
+      const end = selectedPrograms.at(-1) ? eventEnd(selectedPrograms.at(-1)) + 21 * 24 * 60 * 60 : start + 28 * 24 * 60 * 60;
+      const response = await api(
+        `/api/sports/espn/search?league=${encodeURIComponent(espnLeague)}&q=${encodeURIComponent(espnQuery)}&start=${start}&end=${end}`,
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        setShareResult(payload.error || "Could not search ESPN games.");
+        return;
+      }
+      setEspnGames(payload.games || []);
+      setEspnCache({ state: payload.cache, requestsToday: payload.requestsToday });
+      if ((payload.games || []).length === 0) setShareResult("No ESPN games found for that search.");
+    } finally {
+      setEspnSearching(false);
+    }
   }
 
   function shiftWindow(hours) {
@@ -314,6 +342,10 @@ function AppGuide() {
           }}>Clear</button>
           <button type="button" disabled={!selectedProgramIds.size} onClick={async () => {
             await loadStaticShares();
+            setEspnQuery(selectedPrograms[0]?.title || "");
+            setEspnGames([]);
+            setSelectedEspn(null);
+            setEspnCache(null);
             setSchedulePickerOpen(true);
           }}>Add to Schedule</button>
           <button type="button" className="primary" onClick={createShare}>Create Link</button>
@@ -331,6 +363,39 @@ function AppGuide() {
               </div>
               <button type="button" onClick={() => setSchedulePickerOpen(false)}>Close</button>
             </div>
+            <section className="schedulePickerSports">
+              <div className="selectedEventCard">
+                <span>Selected EPG Event{selectedPrograms.length === 1 ? "" : "s"}</span>
+                <strong>{selectedPrograms.map((program) => program.title).join(", ")}</strong>
+                <p>
+                  {selectedPrograms[0]?.channel_name || "Channel"} · {selectedPrograms.length} event{selectedPrograms.length === 1 ? "" : "s"} selected
+                </p>
+              </div>
+              <div className="sportsSearch">
+                <select value={espnLeague} onChange={(event) => setEspnLeague(event.target.value)}>
+                  <option value="nfl">NFL</option>
+                  <option value="mlb">MLB</option>
+                  <option value="nba">NBA</option>
+                  <option value="ncaafb">College Football</option>
+                  <option value="ncaamb">Men's College Basketball</option>
+                </select>
+                <input value={espnQuery} onChange={(event) => setEspnQuery(event.target.value)} placeholder="Search ESPN games, e.g. Bears" />
+                <button type="button" onClick={searchEspnGames} disabled={espnSearching}>{espnSearching ? "Searching..." : "Search ESPN"}</button>
+                <button type="button" onClick={() => setSelectedEspn(null)} disabled={!selectedEspn}>Clear ESPN</button>
+              </div>
+              {selectedEspn && <p className="shareResult">Will link ESPN game: {selectedEspn.shortName || selectedEspn.name}</p>}
+              {espnCache && <p className="cacheNote">ESPN cache: {espnCache.state} · {espnCache.requestsToday} outbound requests today</p>}
+              {espnGames.length > 0 && (
+                <div className="espnResults">
+                  {espnGames.map((game) => (
+                    <button key={game.id} type="button" className={selectedEspn?.id === game.id ? "active" : ""} onClick={() => setSelectedEspn(game)}>
+                      <strong>{game.shortName || game.name}</strong>
+                      <span>{formatDateTime.format(new Date(game.date))} · {game.status || game.leagueLabel}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
             <div className="schedulePickerList">
               {staticShares.length === 0 && <p className="emptyState">No static shares yet.</p>}
               {staticShares.map((share) => (

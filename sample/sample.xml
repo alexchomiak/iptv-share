@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="demo.sports">
+    <display-name>Demo Sports</display-name>
+  </channel>
+  <channel id="demo.movies">
+    <display-name>Demo Movies</display-name>
+  </channel>
+  <channel id="demo.news">
+    <display-name>Demo News</display-name>
+  </channel>
+  <programme start="20260901160000 -0500" stop="20260901173000 -0500" channel="demo.sports">
+    <title>Afternoon Match</title>
+    <sub-title>Live coverage</sub-title>
+    <desc>A sample sports event for testing event selection and sharing.</desc>
+    <category>Sports</category>
+  </programme>
+  <programme start="20260901173000 -0500" stop="20260901180000 -0500" channel="demo.sports">
+    <title>Postgame Desk</title>
+    <desc>A follow-up show that can be selected with the match.</desc>
+    <category>Sports</category>
+  </programme>
+  <programme start="20260901180000 -0500" stop="20260901200000 -0500" channel="demo.sports">
+    <title>Evening Rivalry</title>
+    <desc>Another sample guide entry.</desc>
+    <category>Sports</category>
+  </programme>
+  <programme start="20260901160000 -0500" stop="20260901180000 -0500" channel="demo.movies">
+    <title>Feature Presentation</title>
+    <desc>A sample movie block.</desc>
+    <category>Movie</category>
+  </programme>
+  <programme start="20260901180000 -0500" stop="20260901200000 -0500" channel="demo.movies">
+    <title>Classic Cinema</title>
+    <desc>Another movie entry for timeline testing.</desc>
+    <category>Movie</category>
+  </programme>
+  <programme start="20260901160000 -0500" stop="20260901170000 -0500" channel="demo.news">
+    <title>Newsroom Live</title>
+    <desc>Headlines, weather, and live reports.</desc>
+    <category>News</category>
+  </programme>
+  <programme start="20260901170000 -0500" stop="20260901180000 -0500" channel="demo.news">
+    <title>Market Close</title>
+    <desc>Business coverage and analysis.</desc>
+    <category>News</category>
+  </programme>
+  <programme start="20260901180000 -0500" stop="20260901190000 -0500" channel="demo.news">
+    <title>Evening Report</title>
+    <desc>A sample evening news block.</desc>
+    <category>News</category>
+  </programme>
+</tv>

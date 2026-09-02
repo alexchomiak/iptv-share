@@ -1,0 +1,19 @@
+services:
+  iptv-share:
+    build: .
+    container_name: iptv-share
+    ports:
+      - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      APP_USERNAME: admin
+      APP_PASSWORD: admin
+      SESSION_SECRET: x
+      DATABASE_PATH: /data/app.sqlite
+      M3U_URL: http://192.168.0.37:9191/output/m3u
+      EPG_URL: http://192.168.0.37:9191/output/epg
+      PUBLIC_BASE_URL: http://localhost:8080
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

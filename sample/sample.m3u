@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 tvg-id="demo.sports" tvg-name="Demo Sports" tvg-logo="" group-title="Sports",Demo Sports
+https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
+#EXTINF:-1 tvg-id="demo.movies" tvg-name="Demo Movies" tvg-logo="" group-title="Movies",Demo Movies
+https://test-streams.mux.dev/test_001/stream.m3u8
+#EXTINF:-1 tvg-id="demo.news" tvg-name="Demo News" tvg-logo="" group-title="News",Demo News
+https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4

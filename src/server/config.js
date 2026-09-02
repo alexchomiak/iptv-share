@@ -17,6 +17,8 @@ export const config = {
   streamGraceSeconds: Number(process.env.STREAM_GRACE_SECONDS || 0),
   shareAutoDeleteSeconds: Number(process.env.SHARE_AUTO_DELETE_SECONDS || 300),
   transcodeMpegTs: process.env.TRANSCODE_MPEGTS !== "false",
+  ffmpegHwaccel: String(process.env.FFMPEG_HWACCEL || "none").toLowerCase(),
+  ffmpegVaapiDevice: process.env.FFMPEG_VAAPI_DEVICE || "/dev/dri/renderD128",
   espnSearchCacheSeconds: Number(process.env.ESPN_SEARCH_CACHE_SECONDS || 21600),
   espnLiveCacheSeconds: Number(process.env.ESPN_LIVE_CACHE_SECONDS || 60),
   espnMaxRequestsPerDay: Number(process.env.ESPN_MAX_REQUESTS_PER_DAY || 2000),

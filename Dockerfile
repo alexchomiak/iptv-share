@@ -23,7 +23,7 @@ ENV DATABASE_PATH=/data/app.sqlite
 
 WORKDIR /app
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg \
+  && apt-get install -y --no-install-recommends ffmpeg intel-media-va-driver libva-drm2 mesa-va-drivers vainfo \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

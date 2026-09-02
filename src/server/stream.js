@@ -1,9 +1,15 @@
 import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
+import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import os from "node:os";
+import path from "node:path";
 import { config } from "./config.js";
 import { safeCompare, signedShareCookie, signStreamTarget } from "./crypto.js";
+
+const hlsSessions = new Map();
 
 export function shareIsUnlocked(req, share) {
   if (!share.password_hash) return true;
@@ -138,6 +144,238 @@ export function proxyFmp4Stream(req, res, targetUrl) {
       }
     });
   });
+}
+
+function sessionId(slug, targetUrl) {
+  return crypto.createHash("sha256").update(`${slug}:${targetUrl}`).digest("base64url").slice(0, 48);
+}
+
+function waitForFile(file, timeoutMs = 10000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (fs.existsSync(file)) {
+        resolve();
+        return;
+      }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error("Timed out waiting for HLS playlist"));
+        return;
+      }
+      setTimeout(check, 250);
+    };
+    check();
+  });
+}
+
+function probeCodecs(targetUrl) {
+  return new Promise((resolve) => {
+    const probe = spawn(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,codec_name",
+        "-of",
+        "json",
+        "-rw_timeout",
+        "10000000",
+        targetUrl,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let output = "";
+    const timer = setTimeout(() => {
+      if (!probe.killed) probe.kill("SIGTERM");
+      resolve({ video: "", audio: "" });
+    }, 12000);
+    probe.stdout.on("data", (chunk) => {
+      output = `${output}${chunk}`.slice(-12000);
+    });
+    probe.on("error", () => {
+      clearTimeout(timer);
+      resolve({ video: "", audio: "" });
+    });
+    probe.on("close", () => {
+      clearTimeout(timer);
+      try {
+        const streams = JSON.parse(output).streams || [];
+        resolve({
+          video: streams.find((stream) => stream.codec_type === "video")?.codec_name || "",
+          audio: streams.find((stream) => stream.codec_type === "audio")?.codec_name || "",
+        });
+      } catch {
+        resolve({ video: "", audio: "" });
+      }
+    });
+  });
+}
+
+async function hlsCodecArgs(targetUrl) {
+  const codecs = await probeCodecs(targetUrl);
+  const videoCopy = ["h264", "hevc"].includes(codecs.video);
+  const audioCopy = ["aac", "mp3"].includes(codecs.audio);
+  const videoTranscodeMode = config.ffmpegHwaccel === "vaapi" ? "vaapi" : "cpu";
+  const videoTranscodeArgs =
+    videoTranscodeMode === "vaapi"
+      ? ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", "23"]
+      : ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"];
+
+  return {
+    codecs,
+    inputArgs: videoCopy || videoTranscodeMode !== "vaapi" ? [] : ["-vaapi_device", config.ffmpegVaapiDevice],
+    outputArgs: [
+      ...(videoCopy ? ["-c:v", "copy"] : videoTranscodeArgs),
+      "-c:a",
+      audioCopy ? "copy" : "aac",
+      ...(audioCopy ? [] : ["-b:a", "160k", "-ac", "2"]),
+    ],
+    videoMode: videoCopy ? "copy" : videoTranscodeMode,
+    audioMode: audioCopy ? "copy" : "aac",
+  };
+}
+
+function stopHlsSession(session) {
+  if (session?.process && !session.process.killed) session.process.kill("SIGTERM");
+  if (session?.cleanupTimer) clearTimeout(session.cleanupTimer);
+  hlsSessions.delete(session.id);
+  if (session?.dir) {
+    setTimeout(() => fs.rm(session.dir, { recursive: true, force: true }, () => {}), 500);
+  }
+}
+
+function scheduleHlsCleanup(session, cutoffWindow) {
+  if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+  const cutoffMs = Math.max(15000, (cutoffWindow.ends_at + config.shareAutoDeleteSeconds - Math.floor(Date.now() / 1000)) * 1000);
+  const idleMs = 45000;
+  session.cleanupTimer = setTimeout(() => {
+    if (Date.now() - session.lastAccessed > idleMs || Date.now() >= session.startedAt + cutoffMs) stopHlsSession(session);
+    else scheduleHlsCleanup(session, cutoffWindow);
+  }, Math.min(idleMs, cutoffMs));
+}
+
+async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow) {
+  const id = sessionId(slug, targetUrl);
+  const existing = hlsSessions.get(id);
+  if (existing && existing.process.exitCode === null) {
+    existing.lastAccessed = Date.now();
+    scheduleHlsCleanup(existing, cutoffWindow);
+    return existing;
+  }
+
+  const dir = path.join(os.tmpdir(), "iptv-share-hls", id);
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.mkdirSync(dir, { recursive: true });
+  const { inputArgs, outputArgs, codecs, videoMode, audioMode } = await hlsCodecArgs(targetUrl);
+  const playlistPath = path.join(dir, "index.m3u8");
+  const ffmpeg = spawn(
+    "ffmpeg",
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-rw_timeout",
+      "15000000",
+      ...inputArgs,
+      "-i",
+      targetUrl,
+      "-map",
+      "0:v:0?",
+      "-map",
+      "0:a:0?",
+      ...outputArgs,
+      "-f",
+      "hls",
+      "-hls_time",
+      "4",
+      "-hls_list_size",
+      "6",
+      "-hls_flags",
+      "delete_segments+append_list+omit_endlist+independent_segments",
+      "-hls_segment_filename",
+      path.join(dir, "segment_%05d.ts"),
+      playlistPath,
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] },
+  );
+  let stderr = "";
+  ffmpeg.stderr.on("data", (chunk) => {
+    stderr = `${stderr}${chunk}`.slice(-2000);
+  });
+  const session = {
+    id,
+    dir,
+    playlistPath,
+    process: ffmpeg,
+    startedAt: Date.now(),
+    lastAccessed: Date.now(),
+    codecs,
+    videoMode,
+    audioMode,
+    get stderr() {
+      return stderr;
+    },
+  };
+  hlsSessions.set(id, session);
+  ffmpeg.on("close", () => {
+    setTimeout(() => {
+      if (hlsSessions.get(id) === session) stopHlsSession(session);
+    }, 30000);
+  });
+  scheduleHlsCleanup(session, cutoffWindow);
+  return session;
+}
+
+function rewriteLocalHlsPlaylist(playlist, req, session) {
+  const baseParams = new URLSearchParams(req.query);
+  baseParams.set("hls", "1");
+  baseParams.set("session", session.id);
+  baseParams.delete("segment");
+  baseParams.delete("format");
+  return `${playlist
+    .split(/\r?\n/)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) return line;
+      const params = new URLSearchParams(baseParams);
+      params.set("segment", path.basename(trimmed));
+      return `${req.path}?${params.toString()}`;
+    })
+    .join("\n")}\n`;
+}
+
+export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWindow) {
+  const session = await getOrCreateHlsSession(targetUrl, slug, cutoffWindow);
+  await waitForFile(session.playlistPath);
+  session.lastAccessed = Date.now();
+  const playlist = fs.readFileSync(session.playlistPath, "utf8");
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.setHeader("X-IPTV-Share-Video-Codec", session.codecs.video || "unknown");
+  res.setHeader("X-IPTV-Share-Audio-Codec", session.codecs.audio || "unknown");
+  res.setHeader("X-IPTV-Share-Video-Mode", session.videoMode || "unknown");
+  res.setHeader("X-IPTV-Share-Audio-Mode", session.audioMode || "unknown");
+  res.send(rewriteLocalHlsPlaylist(playlist, req, session));
+}
+
+export function serveHlsRemuxSegment(req, res) {
+  const session = hlsSessions.get(String(req.query.session || ""));
+  const segment = path.basename(String(req.query.segment || ""));
+  if (!session || !segment || segment.includes("..")) {
+    res.status(404).end();
+    return;
+  }
+  const file = path.join(session.dir, segment);
+  if (!fs.existsSync(file)) {
+    res.status(404).end();
+    return;
+  }
+  session.lastAccessed = Date.now();
+  res.setHeader("Content-Type", "video/MP2T");
+  res.setHeader("Cache-Control", "no-store");
+  fs.createReadStream(file).pipe(res);
 }
 
 function requestModule(url) {

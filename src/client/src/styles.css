@@ -953,7 +953,7 @@ h2 {
 
 .footballScorecard {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(220px, 1fr);
+  grid-template-columns: minmax(220px, 1fr) auto auto auto minmax(220px, 1fr);
   align-items: center;
   gap: 18px;
   padding: 18px 24px;
@@ -1016,6 +1016,21 @@ h2 {
 .scoreTeamSide b {
   color: var(--text);
   font-size: 34px;
+}
+
+.footballCenterScore {
+  color: var(--text);
+  font-size: 34px;
+  line-height: 1;
+  text-align: center;
+}
+
+.scoreTeamSide.compact {
+  grid-template-columns: 70px minmax(0, 1fr);
+}
+
+.scoreTeamSide.home.compact {
+  grid-template-columns: minmax(0, 1fr) 70px;
 }
 
 .gameCenter {

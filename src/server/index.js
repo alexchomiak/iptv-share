@@ -8,7 +8,16 @@ import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import { espnLeagues, getEspnGameSummary, searchEspnGames } from "./espn.js";
-import { decodeTarget, inferStreamKind, proxyFmp4Stream, proxyStream, shareIsStreamable, shareIsUnlocked } from "./stream.js";
+import {
+  decodeTarget,
+  inferStreamKind,
+  proxyFmp4Stream,
+  proxyStream,
+  serveHlsRemuxPlaylist,
+  serveHlsRemuxSegment,
+  shareIsStreamable,
+  shareIsUnlocked,
+} from "./stream.js";
 
 const app = express();
 const distDir = path.join(config.rootDir, "dist");
@@ -112,6 +121,28 @@ function findActiveStaticEvent(shareId) {
 function scheduledEventIsStreamable(event) {
   const current = now();
   return event.starts_at - config.streamGraceSeconds <= current && current <= event.ends_at + config.shareAutoDeleteSeconds;
+}
+
+function findActiveShareProgram(shareId) {
+  return db
+    .prepare(
+      `
+      SELECT
+        epg_programs.*,
+        epg_programs.start_at AS starts_at,
+        epg_programs.end_at AS ends_at,
+        channels.stream_url
+      FROM share_link_items
+      JOIN epg_programs ON epg_programs.id = share_link_items.program_id
+      JOIN channels ON channels.id = epg_programs.channel_id
+      WHERE share_link_items.share_id = ?
+        AND epg_programs.start_at - ? <= ?
+        AND ? <= epg_programs.end_at + ?
+      ORDER BY epg_programs.start_at
+      LIMIT 1
+    `,
+    )
+    .get(shareId, config.streamGraceSeconds, now(), now(), config.shareAutoDeleteSeconds);
 }
 
 app.get("/api/me", (req, res) => {
@@ -724,10 +755,9 @@ app.get("/api/public/share/:slug", (req, res) => {
     payload.starts_at = activeEvent?.starts_at || events[0]?.starts_at || null;
     payload.ends_at = activeEvent?.ends_at || events.at(-1)?.ends_at || null;
     payload.stream_available = Boolean(activeEvent);
-    payload.stream_url = activeEvent
-      ? `/api/public/stream/${encodeURIComponent(staticShare.slug)}?event=${activeEvent.id}${useFmp4 ? "&format=fmp4" : ""}`
-      : null;
-    payload.stream_kind = activeEvent ? (useFmp4 ? "native" : streamKind) : null;
+    payload.stream_url = activeEvent ? `/api/public/stream/${encodeURIComponent(staticShare.slug)}?event=${activeEvent.id}` : null;
+    payload.hls_url = activeEvent && useFmp4 ? `/api/public/stream/${encodeURIComponent(staticShare.slug)}?event=${activeEvent.id}&hls=1` : null;
+    payload.stream_kind = activeEvent ? streamKind : null;
     res.json({ share: payload });
     return;
   }
@@ -759,13 +789,14 @@ app.get("/api/public/share/:slug", (req, res) => {
   payload.locked = locked;
   payload.programs = programs;
   payload.server_now = now();
-  payload.stream_available = !locked && shareIsStreamable(share);
-  const streamKind = inferStreamKind(share.stream_url);
+  const activeProgram = !locked && share.mode === "programs" ? findActiveShareProgram(share.id) : null;
+  payload.active_program_id = activeProgram?.id || null;
+  payload.stream_available = !locked && (share.mode === "programs" ? Boolean(activeProgram) : shareIsStreamable(share));
+  const streamKind = inferStreamKind(activeProgram?.stream_url || share.stream_url);
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
-  payload.stream_url = payload.stream_available
-    ? `/api/public/stream/${encodeURIComponent(share.slug)}${useFmp4 ? "?format=fmp4" : ""}`
-    : null;
-  payload.stream_kind = payload.stream_available ? (useFmp4 ? "native" : streamKind) : null;
+  payload.stream_url = payload.stream_available ? `/api/public/stream/${encodeURIComponent(share.slug)}` : null;
+  payload.hls_url = payload.stream_available && useFmp4 ? `/api/public/stream/${encodeURIComponent(share.slug)}?hls=1` : null;
+  payload.stream_kind = payload.stream_available ? streamKind : null;
   res.json({ share: payload });
 });
 
@@ -926,8 +957,16 @@ app.get("/api/public/stream/:slug", async (req, res) => {
       res.status(403).send("Scheduled event is not currently streamable");
       return;
     }
+    if (req.query.hls === "1" && req.query.segment) {
+      serveHlsRemuxSegment(req, res);
+      return;
+    }
     try {
       await withShareCutoff(event, res, async () => {
+        if (req.query.hls === "1") {
+          await serveHlsRemuxPlaylist(req, res, event.stream_url, staticShare.slug, event);
+          return;
+        }
         if (req.query.format === "fmp4") {
           await proxyFmp4Stream(req, res, event.stream_url);
           return;
@@ -949,7 +988,21 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     res.status(403).send("Share is not currently streamable");
     return;
   }
+  const activeProgram = share.mode === "programs" ? findActiveShareProgram(share.id) : null;
+  if (share.mode === "programs" && !activeProgram) {
+    res.status(403).send("No selected program is currently streamable");
+    return;
+  }
   let targetUrl = share.stream_url;
+  let cutoffWindow = share;
+  if (activeProgram) {
+    targetUrl = activeProgram.stream_url;
+    cutoffWindow = activeProgram;
+  }
+  if (req.query.hls === "1" && req.query.segment) {
+    serveHlsRemuxSegment(req, res);
+    return;
+  }
   if (req.query.u) {
     targetUrl = decodeTarget(String(req.query.u));
     if (!safeCompare(String(req.query.sig || ""), signStreamTarget(share.slug, targetUrl))) {
@@ -958,7 +1011,11 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     }
   }
   try {
-    await withShareCutoff(share, res, async () => {
+    await withShareCutoff(cutoffWindow, res, async () => {
+      if (req.query.hls === "1") {
+        await serveHlsRemuxPlaylist(req, res, targetUrl, share.slug, cutoffWindow);
+        return;
+      }
       if (req.query.format === "fmp4") {
         await proxyFmp4Stream(req, res, targetUrl);
         return;

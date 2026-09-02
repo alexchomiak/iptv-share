@@ -69,6 +69,8 @@ EPG_REFRESH_SECONDS=21600
 STREAM_GRACE_SECONDS=0
 SHARE_AUTO_DELETE_SECONDS=300
 TRANSCODE_MPEGTS=true
+FFMPEG_HWACCEL=none
+FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128
 ESPN_SEARCH_CACHE_SECONDS=21600
 ESPN_LIVE_CACHE_SECONDS=60
 ESPN_MAX_REQUESTS_PER_DAY=2000
@@ -158,3 +160,34 @@ Temporary share links are automatically deleted `SHARE_AUTO_DELETE_SECONDS` afte
 ## Notes
 
 Browser IPTV playback depends on the stream container and codecs. This MVP supports HLS via HLS.js, MPEG-TS via mpegts.js, native browser playback, and an FFmpeg-backed MPEG-TS normalization path. By default, MPEG-TS shares are served to viewers as fragmented MP4 with copied H.264 video and AAC audio, which fixes common AC-3/no-audio and mobile playback failures. Set `TRANSCODE_MPEGTS=false` to disable that path.
+
+For iPhone/iPad Safari, MPEG-TS shares are exposed as a temporary HLS session. The server first tries to remux/copy Safari-compatible video codecs (`h264`/`hevc`) and only re-encodes video when the source codec requires it. On an Unraid box with Intel VAAPI available, set:
+
+```env
+FFMPEG_HWACCEL=vaapi
+FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128
+```
+
+Run the container with the GPU devices exposed:
+
+```bash
+docker run \
+  --device /dev/dri/card0:/dev/dri/card0 \
+  --device /dev/dri/renderD128:/dev/dri/renderD128 \
+  --group-add="18" \
+  ...
+```
+
+The VAAPI path uses `h264_vaapi` only when video re-encoding is unavoidable; normal H.264/HEVC streams still use low-CPU copy/remux.
+
+For Docker Compose on Unraid/Linux, add the device mappings to the service:
+
+```yaml
+devices:
+  - /dev/dri/card0:/dev/dri/card0
+  - /dev/dri/renderD128:/dev/dri/renderD128
+group_add:
+  - "18"
+```
+
+Inside the running container, `vainfo --display drm --device /dev/dri/renderD128` should list supported VAAPI profiles, and `ffmpeg -hide_banner -encoders | grep vaapi` should include `h264_vaapi`.

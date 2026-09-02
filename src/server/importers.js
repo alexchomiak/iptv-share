@@ -74,6 +74,8 @@ export function parseXmltvTime(value) {
 
 export async function refreshSources() {
   try {
+    const refreshMarker = Date.now();
+    const refreshedAt = now();
     const [m3uText, epgText] = await Promise.all([readUrlOrFile(config.m3uUrl), readUrlOrFile(config.epgUrl)]);
     const channels = parseM3u(m3uText);
     const parser = new XMLParser({
@@ -101,8 +103,11 @@ export async function refreshSources() {
           updated_at = excluded.updated_at
       `);
       for (const channel of channels) {
-        insertChannel.run({ ...channel, updatedAt: now() });
+        insertChannel.run({ ...channel, updatedAt: refreshMarker });
       }
+
+      db.prepare("DELETE FROM channels WHERE updated_at != ?").run(refreshMarker);
+
       for (const row of db.prepare("SELECT id, tvg_id, name FROM channels").all()) {
         if (row.tvg_id) channelByKey.set(row.tvg_id, row.id);
         channelByName.set(row.name.toLowerCase(), row.id);
@@ -116,14 +121,15 @@ export async function refreshSources() {
       }
 
       const upsertProgram = db.prepare(`
-        INSERT INTO epg_programs(channel_key, channel_id, title, subtitle, description, category, icon, start_at, end_at)
-        VALUES (@channelKey, @channelId, @title, @subtitle, @description, @category, @icon, @startAt, @endAt)
+        INSERT INTO epg_programs(channel_key, channel_id, title, subtitle, description, category, icon, start_at, end_at, updated_at)
+        VALUES (@channelKey, @channelId, @title, @subtitle, @description, @category, @icon, @startAt, @endAt, @updatedAt)
         ON CONFLICT(channel_key, start_at, end_at, title) DO UPDATE SET
           channel_id = excluded.channel_id,
           subtitle = excluded.subtitle,
           description = excluded.description,
           category = excluded.category,
-          icon = excluded.icon
+          icon = excluded.icon,
+          updated_at = excluded.updated_at
       `);
       for (const program of programs) {
         const channelKey = program["@_channel"];
@@ -133,6 +139,7 @@ export async function refreshSources() {
         if (!channelKey || !startAt || !endAt) continue;
         const xmlName = xmltvNames.get(channelKey);
         const channelId = channelByKey.get(channelKey) || (xmlName ? channelByName.get(xmlName.toLowerCase()) : null);
+        if (!channelId) continue;
         const icon = asArray(program.icon)[0]?.["@_src"] || "";
         upsertProgram.run({
           channelKey,
@@ -144,9 +151,12 @@ export async function refreshSources() {
           icon,
           startAt,
           endAt,
+          updatedAt: refreshMarker,
         });
       }
-      db.prepare("UPDATE refresh_state SET last_refresh_at = ?, last_error = NULL WHERE id = 1").run(now());
+
+      db.prepare("DELETE FROM epg_programs WHERE updated_at != ?").run(refreshMarker);
+      db.prepare("UPDATE refresh_state SET last_refresh_at = ?, last_error = NULL WHERE id = 1").run(refreshedAt);
     });
     tx();
   } catch (error) {

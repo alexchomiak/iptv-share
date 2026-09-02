@@ -101,16 +101,6 @@ h2 {
   overflow: hidden;
 }
 
-.appShell.sharesVisible {
-  grid-template-areas:
-    "topbar"
-    "controls"
-    "workspace"
-    "peek"
-    "selection";
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
-}
-
 .topbar,
 .controls,
 .selectionPanel {
@@ -206,6 +196,225 @@ h2 {
 .timeControls button {
   padding: 0 10px;
   white-space: nowrap;
+}
+
+.buttonLink {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.buttonLink:hover {
+  border-color: var(--accent);
+}
+
+.adminShell {
+  min-height: 100vh;
+  max-height: 100vh;
+  overflow: auto;
+  background: var(--bg);
+}
+
+.adminHeader {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(27, 32, 40, 0.96);
+  backdrop-filter: blur(14px);
+}
+
+.adminHeader p,
+.adminSectionTitle p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.adminGrid {
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  padding: 18px 22px 28px;
+}
+
+.adminCard {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #141a23;
+  padding: 16px;
+}
+
+.adminCard h2 {
+  font-size: 18px;
+}
+
+.adminShareList {
+  gap: 10px;
+}
+
+.adminSectionTitle {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.adminShareRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: #101720;
+}
+
+.adminShareMeta {
+  min-width: 0;
+}
+
+.adminShareMeta strong,
+.adminShareMeta span,
+.adminShareMeta small,
+.adminShareMeta a {
+  display: block;
+}
+
+.adminShareMeta span,
+.adminShareMeta small {
+  color: var(--muted);
+}
+
+.adminShareMeta a {
+  color: var(--accent);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+
+.adminShareActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.adminShareHero {
+  position: static;
+}
+
+.adminShareIdentity {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+}
+
+.adminShareIdentity img {
+  width: 62px;
+  height: 62px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0f1217;
+  padding: 8px;
+}
+
+.adminShareIdentity h1,
+.adminShareIdentity p {
+  overflow-wrap: anywhere;
+}
+
+.adminShareLayout {
+  display: grid;
+  grid-template-columns: minmax(280px, 360px) minmax(300px, 1fr);
+  align-items: start;
+  gap: 18px;
+  padding: 18px 22px 28px;
+}
+
+.adminSettingsForm,
+.adminSchedulePanel {
+  grid-column: 1 / -1;
+}
+
+.adminViewerList,
+.adminChatLog,
+.adminScheduleList {
+  display: grid;
+  gap: 8px;
+}
+
+.adminViewerList article,
+.adminScheduleList article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: #101720;
+}
+
+.adminViewerList strong,
+.adminViewerList span,
+.adminScheduleList strong,
+.adminScheduleList span,
+.adminScheduleList small {
+  display: block;
+}
+
+.adminViewerList span,
+.adminScheduleList span,
+.adminScheduleList small,
+.adminChatLog span {
+  color: var(--muted);
+}
+
+.adminChatLog {
+  max-height: 440px;
+  overflow: auto;
+  align-content: start;
+}
+
+.adminChatLog p {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #101720;
+}
+
+.adminChatLog strong {
+  color: var(--accent);
+}
+
+.adminScheduleList article {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.adminScheduleList img {
+  width: 72px;
+  height: 48px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #0f1217;
 }
 
 .shareAdmin {
@@ -371,7 +580,7 @@ h2 {
 
 .shareSettingsForm {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
   gap: 10px;
   align-items: end;
   padding: 12px;
@@ -700,8 +909,429 @@ h2 {
 
 .panelFields {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 12px;
+}
+
+.schedulePickerOverlay {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 7, 10, 0.72);
+}
+
+.schedulePickerModal {
+  width: min(760px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #141a23;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.56);
+  overflow: hidden;
+}
+
+.schedulePickerHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+  background: #1a202a;
+}
+
+.schedulePickerHeader p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.schedulePickerList {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.schedulePickerList button {
+  height: auto;
+  min-height: 74px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  text-align: left;
+  background: #101720;
+}
+
+.schedulePickerList strong,
+.schedulePickerList span,
+.schedulePickerList small {
+  display: block;
+}
+
+.schedulePickerList span,
+.schedulePickerList small {
+  color: var(--muted);
+}
+
+.viewerManager {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #151c27;
+}
+
+.viewerAdminList {
+  display: grid;
+  gap: 8px;
+}
+
+.viewerAdminList article {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: #101720;
+}
+
+.viewerAdminList strong,
+.viewerAdminList span {
+  display: block;
+}
+
+.viewerAdminList span,
+.adminChatPreview p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.adminChatPreview {
+  display: grid;
+  gap: 6px;
+}
+
+.watchLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  align-items: start;
+  padding: 16px 20px 0;
+  min-height: 0;
+}
+
+.watchPrimary {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.watchPrimary .playerArea {
+  padding: 0;
+}
+
+.watchPrimary .staticCountdown,
+.watchPrimary .staticCountdown.hasMedia {
+  width: 100%;
+  margin: 0;
+}
+
+.watchPrimary .sportsPanel {
+  margin: 0;
+}
+
+.watchPrimary .waitlistNotice {
+  margin: 0;
+}
+
+.shareChat {
+  min-width: 0;
+  height: min(680px, calc(100vh - 150px));
+  position: sticky;
+  top: 16px;
+}
+
+.chatPanel {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111720;
+  padding: 14px;
+}
+
+.chatHeader {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.72);
+}
+
+.chatHeader p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.iconButton {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  font-weight: 850;
+}
+
+.viewerPopover {
+  position: absolute;
+  z-index: 12;
+  top: 44px;
+  right: 0;
+  width: min(320px, 82vw);
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #151c27;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.viewerPills {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.viewerPills > span,
+.viewerPillRow {
+  border: 1px solid rgba(57, 68, 82, 0.9);
+  border-radius: 8px;
+  padding: 7px 9px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.viewerPillRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.viewerPillRow button {
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.viewerPillRow span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.viewerPills > span.streaming,
+.viewerPillRow.streaming {
+  border-color: rgba(49, 196, 141, 0.56);
+  color: #d8fff0;
+  background: rgba(49, 196, 141, 0.12);
+}
+
+.viewerPills > span.waiting,
+.viewerPillRow.waiting {
+  border-color: rgba(250, 204, 21, 0.48);
+  color: #fef3c7;
+  background: rgba(250, 204, 21, 0.1);
+}
+
+.waitlistNotice {
+  margin: 0 20px 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(250, 204, 21, 0.42);
+  border-radius: 8px;
+  background: rgba(250, 204, 21, 0.1);
+  color: #fef3c7;
+}
+
+.dangerText {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+}
+
+.chatMessages {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+  margin: 12px 0;
+  padding-right: 4px;
+}
+
+.chatMessages > p,
+.chatStatus {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chatMessage {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #151c27;
+}
+
+.chatMessageMeta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.chatMessageMeta strong {
+  min-width: 0;
+  color: var(--accent);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.chatMessageMeta time {
+  flex: 0 0 auto;
+  color: rgba(170, 179, 194, 0.72);
+  font-size: 11px;
+}
+
+.chatMessage span {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.chatComposer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.viewerNameOverlay {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(5, 7, 10, 0.72);
+}
+
+.viewerNameModal {
+  width: min(380px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #151922;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+}
+
+.adminWatchShell {
+  overflow: auto;
+}
+
+.adminWatchBar {
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) repeat(3, auto);
+  align-items: end;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #141a23;
+}
+
+.adminWatchBar form {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.adminWatchBar > div {
+  min-width: 96px;
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: #101720;
+}
+
+.adminWatchBar strong,
+.adminWatchBar span {
+  display: block;
+}
+
+.adminWatchBar span,
+.adminWatchBar p {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.adminViewerStrip {
+  display: grid;
+  gap: 10px;
+  margin: 16px 20px 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #141a23;
+}
+
+.adminViewerStrip > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.adminViewerStrip article {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: #101720;
+}
+
+.adminViewerStrip article span {
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.adminViewerStrip article strong {
+  color: var(--text);
 }
 
 .shareResult a {
@@ -780,15 +1410,20 @@ h2 {
 }
 
 .staticHero {
-  align-items: flex-start;
+  justify-content: flex-start;
+  align-items: center;
   padding: 20px 24px 12px;
   border-bottom: 0;
   background: transparent;
 }
 
+.staticHero > div {
+  min-width: 0;
+}
+
 .staticShareIcon {
-  width: 58px;
-  height: 58px;
+  width: 72px;
+  height: 72px;
   flex: 0 0 auto;
   object-fit: contain;
   border: 1px solid rgba(57, 68, 82, 0.8);
@@ -799,6 +1434,7 @@ h2 {
 
 .staticHero h1 {
   font-size: 24px;
+  overflow-wrap: anywhere;
 }
 
 .staticHero p {
@@ -1242,6 +1878,15 @@ h2 {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.adminScheduleProgramList .programRow {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.adminScheduleProgramList .programRow.noMedia {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .programRow.live {
   border-color: var(--accent);
   background: rgba(49, 196, 141, 0.13);
@@ -1291,7 +1936,11 @@ h2 {
 @media (max-width: 900px) {
   .controls,
   .selectionPanel,
-  .panelFields {
+  .panelFields,
+  .adminGrid,
+  .adminShareLayout,
+  .adminShareRow,
+  .adminViewerList article {
     grid-template-columns: 1fr;
   }
 
@@ -1307,14 +1956,67 @@ h2 {
   .shareManagerBody,
   .staticShareCreator,
   .shareSettingsForm,
+  .adminWatchBar,
+  .adminWatchBar form,
   .sportsSearch,
   .scheduleList article,
   .footballScorecard,
   .footballBoxscore,
   .baseballScorecard,
   .baseballBoxscore,
-  .programRow {
+  .programRow,
+  .adminScheduleProgramList .programRow,
+  .adminScheduleProgramList .programRow.noMedia,
+  .shareChat,
+  .watchLayout,
+  .chatComposer,
+  .viewerAdminList article {
     grid-template-columns: 1fr;
+  }
+
+  .watchLayout {
+    padding: 12px;
+  }
+
+  .shareChat {
+    height: min(460px, calc(100vh - 120px));
+    position: static;
+  }
+
+  .adminHeader,
+  .adminShareHero {
+    position: static;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .adminGrid,
+  .adminShareLayout {
+    padding: 12px;
+  }
+
+  .adminShareActions {
+    justify-content: flex-start;
+  }
+
+  .adminWatchBar {
+    padding: 12px;
+  }
+
+  .adminViewerStrip {
+    margin: 12px;
+  }
+
+  .adminScheduleList article {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  .adminScheduleList article button {
+    grid-column: 1 / -1;
+  }
+
+  .chatPanel {
+    min-height: 0;
   }
 
   .sportsPanel {
@@ -1371,7 +2073,15 @@ h2 {
   }
 
   .staticHero {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
     padding: 16px;
+  }
+
+  .staticShareIcon {
+    width: 58px;
+    height: 58px;
   }
 
   .shareHero time {

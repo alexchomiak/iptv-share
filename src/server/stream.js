@@ -29,29 +29,33 @@ export function decodeTarget(value) {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
-function proxiedUrl(slug, targetUrl) {
+function proxiedUrl(slug, targetUrl, extraParams = {}) {
   const encoded = encodeTarget(targetUrl);
   const sig = signStreamTarget(slug, targetUrl);
-  return `/api/public/stream/${encodeURIComponent(slug)}?u=${encoded}&sig=${sig}`;
+  const params = new URLSearchParams({ u: encoded, sig });
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (key !== "route" && value) params.set(key, value);
+  }
+  return `${extraParams.route || "/api/public/stream"}/${encodeURIComponent(slug)}?${params.toString()}`;
 }
 
-function rewriteHlsAttributeUris(line, baseUrl, slug) {
+function rewriteHlsAttributeUris(line, baseUrl, slug, extraParams) {
   return line.replace(/URI="([^"]+)"/g, (_match, uri) => {
     const target = new URL(uri, baseUrl).toString();
-    return `URI="${proxiedUrl(slug, target)}"`;
+    return `URI="${proxiedUrl(slug, target, extraParams)}"`;
   });
 }
 
-export function rewriteHlsPlaylist(text, baseUrl, slug) {
+export function rewriteHlsPlaylist(text, baseUrl, slug, extraParams = {}) {
   return `${text
     .split(/\r?\n/)
     .map((line) => {
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith("#")) {
-        return proxiedUrl(slug, new URL(trimmed, baseUrl).toString());
+        return proxiedUrl(slug, new URL(trimmed, baseUrl).toString(), extraParams);
       }
       if (trimmed.startsWith("#") && trimmed.includes('URI="')) {
-        return rewriteHlsAttributeUris(line, baseUrl, slug);
+        return rewriteHlsAttributeUris(line, baseUrl, slug, extraParams);
       }
       return line;
     })
@@ -71,8 +75,8 @@ export function inferStreamKind(url, contentType = "") {
   return "mpegts";
 }
 
-export async function proxyStream(req, res, targetUrl, slug) {
-  return proxyStreamNative(req, res, targetUrl, slug, 0);
+export async function proxyStream(req, res, targetUrl, slug, extraParams = {}) {
+  return proxyStreamNative(req, res, targetUrl, slug, 0, extraParams);
 }
 
 export function proxyFmp4Stream(req, res, targetUrl) {
@@ -382,7 +386,7 @@ function requestModule(url) {
   return url.protocol === "https:" ? https : http;
 }
 
-function proxyStreamNative(req, res, targetUrl, slug, redirectCount) {
+function proxyStreamNative(req, res, targetUrl, slug, redirectCount, extraParams = {}) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(targetUrl);
     const headers = {
@@ -396,7 +400,7 @@ function proxyStreamNative(req, res, targetUrl, slug, redirectCount) {
       const location = upstream.headers.location;
       if ([301, 302, 303, 307, 308].includes(upstream.statusCode) && location && redirectCount < 5) {
         upstream.resume();
-        resolve(proxyStreamNative(req, res, new URL(location, targetUrl).toString(), slug, redirectCount + 1));
+        resolve(proxyStreamNative(req, res, new URL(location, targetUrl).toString(), slug, redirectCount + 1, extraParams));
         return;
       }
 
@@ -415,7 +419,7 @@ function proxyStreamNative(req, res, targetUrl, slug, redirectCount) {
           const playlist = Buffer.concat(chunks).toString("utf8");
           res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
           res.setHeader("Cache-Control", "no-store");
-          res.send(rewriteHlsPlaylist(playlist, targetUrl, slug));
+          res.send(rewriteHlsPlaylist(playlist, targetUrl, slug, { viewer: req.query.viewer, ...extraParams }));
           resolve();
         });
         upstream.on("error", reject);

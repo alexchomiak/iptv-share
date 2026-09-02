@@ -73,6 +73,11 @@ FFMPEG_HWACCEL=none
 FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128
 ESPN_SEARCH_CACHE_SECONDS=21600
 ESPN_LIVE_CACHE_SECONDS=60
+ESPN_LIVE_CACHE_SECONDS_NFL=60
+ESPN_LIVE_CACHE_SECONDS_MLB=150
+ESPN_LIVE_CACHE_SECONDS_NBA=60
+ESPN_LIVE_CACHE_SECONDS_NCAAFB=60
+ESPN_LIVE_CACHE_SECONDS_NCAAMB=60
 ESPN_MAX_REQUESTS_PER_DAY=2000
 PORT=8080
 ```
@@ -148,6 +153,8 @@ Use **Create Static** in the Shares panel for a permanent schedule share such as
 ESPN linking uses public ESPN scoreboard data for NFL, NBA, college football, and men's college basketball. It searches future scoreboard ranges, so you can attach a game before the event airs.
 
 ESPN calls are cached in SQLite. Scoreboard/search windows default to a 6-hour cache, live game summaries default to a 60-second cache, and the app has a local outbound ESPN ceiling of `ESPN_MAX_REQUESTS_PER_DAY` per UTC day. Search filtering happens locally against cached scoreboard windows, so repeated searches by viewers/admins do not create repeated ESPN calls.
+
+Live ESPN refresh intervals are configurable by league. MLB defaults to 150 seconds; NFL, NBA, college football, and men's college basketball default to 60 seconds. Public pages only fetch live ESPN summaries while at least one viewer is actively streaming that share.
 
 ## Public Share Security
 

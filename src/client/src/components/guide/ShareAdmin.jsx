@@ -1,17 +1,44 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api.js";
 import { eventStart, formatDateTime } from "../../lib/time.js";
 
 function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
-  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", password: "" });
-  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", password: "", clearPassword: false });
+  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", password: "", maxViewers: "" });
+  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", password: "", clearPassword: false, maxViewers: "" });
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(null);
+  const [viewerShare, setViewerShare] = useState(null);
   const [espnQuery, setEspnQuery] = useState("");
   const [espnLeague, setEspnLeague] = useState("nfl");
   const [espnGames, setEspnGames] = useState([]);
   const [selectedEspn, setSelectedEspn] = useState(null);
   const [espnCache, setEspnCache] = useState(null);
+  const [activeViewers, setActiveViewers] = useState([]);
+  const [recentMessages, setRecentMessages] = useState([]);
+  const adminSocketRef = useRef(null);
+  const managedShareKind = editing ? "static" : viewerShare?.kind;
+  const managedShareId = editing?.id || viewerShare?.id;
+  const managedShareTitle = editing?.title || viewerShare?.title || viewerShare?.slug || "";
+
+  useEffect(() => {
+    if (!managedShareKind || !managedShareId) return undefined;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}/ws/admin`);
+    adminSocketRef.current = socket;
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({ type: "subscribe", shareKind: managedShareKind, shareId: managedShareId }));
+    });
+    socket.addEventListener("message", (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.type === "presence") setActiveViewers(payload.viewers || []);
+      if (payload.type === "chatHistory") setRecentMessages(payload.messages || []);
+      if (payload.type === "chat") setRecentMessages((current) => [...current.slice(-79), payload.message]);
+    });
+    return () => {
+      socket.close();
+      adminSocketRef.current = null;
+    };
+  }, [managedShareKind, managedShareId]);
 
   async function createStaticShare() {
     const response = await api("/api/static-shares", {
@@ -24,7 +51,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       setMessage(payload.error || "Could not create static share.");
       return;
     }
-    setStaticForm({ slug: "", title: "", description: "", icon: "", password: "" });
+    setStaticForm({ slug: "", title: "", description: "", icon: "", password: "", maxViewers: "" });
     setMessage(`Created ${payload.url}`);
     await onRefresh();
   }
@@ -34,12 +61,14 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
     const payload = await response.json();
     if (response.ok) {
       setEditing(payload.share);
+      setViewerShare(null);
       setSettingsForm({
         title: payload.share.title || "",
         description: payload.share.description || "",
         icon: payload.share.icon || "",
         password: "",
         clearPassword: false,
+        maxViewers: payload.share.max_viewers || "",
       });
     }
   }
@@ -63,6 +92,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       icon: payload.share.icon || "",
       password: "",
       clearPassword: false,
+      maxViewers: payload.share.max_viewers || "",
     });
     setMessage("Saved share settings.");
     await onRefresh();
@@ -114,6 +144,27 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
     await openStaticShare(editing);
   }
 
+  async function kickViewer(viewerId) {
+    if (!managedShareKind || !managedShareId) return;
+    await api(`/api/share-viewers/${managedShareKind}/${managedShareId}/${viewerId}/kick`, { method: "POST" });
+  }
+
+  async function unkickViewer(viewerId) {
+    if (!managedShareKind || !managedShareId) return;
+    await api(`/api/share-viewers/${managedShareKind}/${managedShareId}/${viewerId}/unkick`, { method: "POST" });
+  }
+
+  async function openViewerManager(share) {
+    setEditing(null);
+    setViewerShare(share);
+    const response = await api(`/api/share-viewers/${share.kind}/${share.id}`);
+    const payload = await response.json();
+    if (response.ok) {
+      setActiveViewers(payload.viewers || []);
+      setRecentMessages(payload.messages || []);
+    }
+  }
+
   return (
     <section className="shareAdmin">
       <div className="shareAdminHeader">
@@ -139,6 +190,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
             <input value={staticForm.description} onChange={(event) => setStaticForm({ ...staticForm, description: event.target.value })} placeholder="Optional description" />
             <input value={staticForm.icon} onChange={(event) => setStaticForm({ ...staticForm, icon: event.target.value })} placeholder="Optional icon image URL" />
             <input value={staticForm.password} onChange={(event) => setStaticForm({ ...staticForm, password: event.target.value })} type="password" placeholder="Optional stream password" />
+            <input value={staticForm.maxViewers} onChange={(event) => setStaticForm({ ...staticForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Max stream viewers" />
             <button type="submit" className="primary">Create Static Share</button>
           </form>
 
@@ -161,6 +213,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                   <a href={url} target="_blank" rel="noreferrer">{url}</a>
                   <div className="shareActions">
                     {share.kind === "static" && <button type="button" onClick={() => openStaticShare(share)}>Manage</button>}
+                    <button type="button" onClick={() => openViewerManager(share)}>Viewers</button>
                     <button type="button" className="danger" onClick={() => deleteAnyShare(share)}>Delete</button>
                   </div>
                 </article>
@@ -170,11 +223,43 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
         </aside>
 
         <section className="scheduleEditor">
-          {!editing && (
+          {!editing && !viewerShare && (
             <div className="emptySchedule">
               <h3>Select a static share</h3>
               <p>Choose a static share on the left, then select an EPG event in the guide to add it to that schedule.</p>
             </div>
+          )}
+          {!editing && viewerShare && (
+            <section className="viewerManager">
+              <div className="scheduleTitle">
+                <div>
+                  <h3>{managedShareTitle}</h3>
+                  <p>{activeViewers.filter((viewer) => viewer.streaming).length} streaming · {activeViewers.filter((viewer) => viewer.waiting).length} waiting · {activeViewers.length} online</p>
+                </div>
+                <button type="button" onClick={() => setViewerShare(null)}>Close Viewers</button>
+              </div>
+              <div className="viewerAdminList">
+                {activeViewers.length === 0 && <p className="emptyState">No active viewers.</p>}
+                {activeViewers.map((viewer) => (
+                  <article key={viewer.id}>
+                    <div>
+                      <strong>{viewer.username}</strong>
+                      <span>{viewer.streaming ? "Streaming" : viewer.waiting ? "Waiting" : viewer.online ? "Online" : "Offline"}{viewer.kicked ? " · kicked" : ""}</span>
+                    </div>
+                    {viewer.kicked
+                      ? <button type="button" onClick={() => unkickViewer(viewer.id)}>Restore</button>
+                      : <button type="button" className="danger" onClick={() => kickViewer(viewer.id)}>Kick</button>}
+                  </article>
+                ))}
+              </div>
+              <div className="adminChatPreview">
+                <h3>Recent Chat</h3>
+                {recentMessages.length === 0 && <p className="emptyState">No messages yet.</p>}
+                {recentMessages.slice(-10).map((item) => (
+                  <p key={item.id}><strong>{item.username}:</strong> {item.message}</p>
+                ))}
+              </div>
+            </section>
           )}
           {editing && (
             <>
@@ -205,6 +290,10 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                 <label>
                   New password
                   <input value={settingsForm.password} onChange={(event) => setSettingsForm({ ...settingsForm, password: event.target.value, clearPassword: false })} type="password" placeholder={editing.has_password ? "Leave blank to keep current" : "Optional"} />
+                </label>
+                <label>
+                  Max stream viewers
+                  <input value={settingsForm.maxViewers} onChange={(event) => setSettingsForm({ ...settingsForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
                 </label>
                 <label className="checkboxLabel">
                   <input checked={settingsForm.clearPassword} onChange={(event) => setSettingsForm({ ...settingsForm, clearPassword: event.target.checked, password: "" })} type="checkbox" disabled={!editing.has_password} />
@@ -246,6 +335,34 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                   ))}
                 </div>
               )}
+
+              <section className="viewerManager">
+                <div>
+                  <h3>Active Viewers</h3>
+                  <p>{activeViewers.filter((viewer) => viewer.streaming).length} streaming · {activeViewers.filter((viewer) => viewer.waiting).length} waiting · {activeViewers.length} online</p>
+                </div>
+                <div className="viewerAdminList">
+                  {activeViewers.length === 0 && <p className="emptyState">No active viewers.</p>}
+                  {activeViewers.map((viewer) => (
+                    <article key={viewer.id}>
+                      <div>
+                        <strong>{viewer.username}</strong>
+                        <span>{viewer.streaming ? "Streaming" : viewer.waiting ? "Waiting" : "Online"}{viewer.kicked ? " · kicked" : ""}</span>
+                      </div>
+                      {viewer.kicked
+                        ? <button type="button" onClick={() => unkickViewer(viewer.id)}>Restore</button>
+                        : <button type="button" className="danger" onClick={() => kickViewer(viewer.id)}>Kick</button>}
+                    </article>
+                  ))}
+                </div>
+                <div className="adminChatPreview">
+                  <h3>Recent Chat</h3>
+                  {recentMessages.length === 0 && <p className="emptyState">No messages yet.</p>}
+                  {recentMessages.slice(-6).map((item) => (
+                    <p key={item.id}><strong>{item.username}:</strong> {item.message}</p>
+                  ))}
+                </div>
+              </section>
 
               <div className="scheduleList">
                 {editing.events.length === 0 && <p className="emptyState">No scheduled events yet.</p>}

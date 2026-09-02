@@ -4,7 +4,6 @@ import { navigate } from "../../lib/navigation.js";
 import { eventEnd, eventStart, formatDateTime, fromLocalInput, toLocalInput } from "../../lib/time.js";
 import EventPeek from "./EventPeek.jsx";
 import GuideGrid from "./GuideGrid.jsx";
-import ShareAdmin from "./ShareAdmin.jsx";
 
 function AppGuide() {
   const initialStart = useMemo(() => toLocalInput(new Date(Date.now() - 30 * 60 * 1000)), []);
@@ -19,10 +18,10 @@ function AppGuide() {
   const [rangeEnd, setRangeEnd] = useState(initialEnd);
   const [selectedChannelId, setSelectedChannelId] = useState(null);
   const [selectedProgramIds, setSelectedProgramIds] = useState(new Set());
-  const [shareForm, setShareForm] = useState({ slug: "", title: "", password: "" });
+  const [shareForm, setShareForm] = useState({ slug: "", title: "", password: "", maxViewers: "" });
+  const [staticShares, setStaticShares] = useState([]);
+  const [schedulePickerOpen, setSchedulePickerOpen] = useState(false);
   const [shareResult, setShareResult] = useState("");
-  const [sharesOpen, setSharesOpen] = useState(false);
-  const [shares, setShares] = useState([]);
   const [activeProgram, setActiveProgram] = useState(null);
   const [scheduleProgram, setScheduleProgram] = useState(null);
 
@@ -44,6 +43,10 @@ function AppGuide() {
   useEffect(() => {
     loadData();
   }, [rangeStart, rangeEnd]);
+
+  useEffect(() => {
+    loadStaticShares();
+  }, []);
 
   useEffect(() => {
     const needle = search.trim();
@@ -129,14 +132,36 @@ function AppGuide() {
     }
     const url = payload.url.startsWith("/") ? `${window.location.origin}${payload.url}` : payload.url;
     setShareResult(url);
-    if (sharesOpen) loadShares();
   }
 
-  async function loadShares() {
+  async function loadStaticShares() {
     const response = await api("/api/shares");
     if (!response.ok) return;
     const payload = await response.json();
-    setShares(payload.shares);
+    const schedules = (payload.shares || []).filter((share) => share.kind === "static");
+    setStaticShares(schedules);
+  }
+
+  async function addToStaticSchedule(targetShare) {
+    if (!targetShare?.id || selectedPrograms.length === 0) {
+      setShareResult("Select one or more EPG events and a static share first.");
+      return;
+    }
+    for (const program of selectedPrograms) {
+      const response = await api(`/api/static-shares/${targetShare.id}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ programId: program.id }),
+      });
+      if (!response.ok) {
+        const payload = await response.json();
+        setShareResult(payload.error || "Could not add event to schedule.");
+        return;
+      }
+    }
+    setShareResult("Added selected event(s) to the static schedule.");
+    setSchedulePickerOpen(false);
+    navigate(`/admin/s/${targetShare.admin_ref || `static-${targetShare.id}`}`);
   }
 
   function shiftWindow(hours) {
@@ -181,18 +206,14 @@ function AppGuide() {
       : "Select one or more shows, or choose a channel and time window.";
 
   return (
-    <main className={`appShell ${sharesOpen ? "sharesVisible" : ""}`}>
+    <main className="appShell">
       <header className="topbar">
         <div>
           <h1>IPTV Share</h1>
           <p>{status}</p>
         </div>
         <div className="toolbar">
-          <button type="button" onClick={() => {
-            const next = !sharesOpen;
-            setSharesOpen(next);
-            if (next) loadShares();
-          }}>Shares</button>
+          <button type="button" onClick={() => navigate("/admin")}>Shares</button>
           <button type="button" onClick={refresh}>Refresh</button>
           <button type="button" onClick={logout}>Log out</button>
         </div>
@@ -243,15 +264,6 @@ function AppGuide() {
         </div>
       </section>
 
-      {sharesOpen && (
-        <ShareAdmin
-          shares={shares}
-          selectedProgram={scheduleProgram}
-          onRefresh={loadShares}
-          onClose={() => setSharesOpen(false)}
-        />
-      )}
-
       <GuideGrid
         channels={visibleChannels}
         programs={programs}
@@ -288,6 +300,10 @@ function AppGuide() {
             Share password
             <input value={shareForm.password} onChange={(event) => setShareForm({ ...shareForm, password: event.target.value })} type="password" placeholder="Optional" />
           </label>
+          <label>
+            Max viewers
+            <input value={shareForm.maxViewers} onChange={(event) => setShareForm({ ...shareForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
+          </label>
         </div>
         <div className="toolbar">
           <button type="button" onClick={() => {
@@ -296,10 +312,38 @@ function AppGuide() {
             setScheduleProgram(null);
             setShareResult("");
           }}>Clear</button>
+          <button type="button" disabled={!selectedProgramIds.size} onClick={async () => {
+            await loadStaticShares();
+            setSchedulePickerOpen(true);
+          }}>Add to Schedule</button>
           <button type="button" className="primary" onClick={createShare}>Create Link</button>
         </div>
         <p className="shareResult">{shareResult && (shareResult.startsWith("http") ? <a href={shareResult} target="_blank" rel="noreferrer">{shareResult}</a> : shareResult)}</p>
       </aside>
+
+      {schedulePickerOpen && (
+        <section className="schedulePickerOverlay" role="dialog" aria-modal="true" aria-label="Add selected events to schedule">
+          <div className="schedulePickerModal">
+            <div className="schedulePickerHeader">
+              <div>
+                <h2>Add to Schedule</h2>
+                <p>{selectedSummary}</p>
+              </div>
+              <button type="button" onClick={() => setSchedulePickerOpen(false)}>Close</button>
+            </div>
+            <div className="schedulePickerList">
+              {staticShares.length === 0 && <p className="emptyState">No static shares yet.</p>}
+              {staticShares.map((share) => (
+                <button key={share.admin_ref || share.id} type="button" onClick={() => addToStaticSchedule(share)}>
+                  <strong>{share.title || share.slug}</strong>
+                  <span>{share.event_count} scheduled · {share.next_event_at ? `Next ${formatDateTime.format(new Date(share.next_event_at * 1000))}` : "No upcoming events"}</span>
+                  <small>/s/{share.slug}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
     </main>
   );
 }

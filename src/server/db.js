@@ -44,6 +44,7 @@ export function initDb() {
       icon TEXT,
       start_at INTEGER NOT NULL,
       end_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT 0,
       FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_epg_range ON epg_programs(start_at, end_at);
@@ -59,6 +60,7 @@ export function initDb() {
       starts_at INTEGER NOT NULL,
       ends_at INTEGER NOT NULL,
       password_hash TEXT,
+      max_viewers INTEGER,
       opened_count INTEGER NOT NULL DEFAULT 0,
       last_opened_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -79,6 +81,7 @@ export function initDb() {
       description TEXT,
       icon TEXT,
       password_hash TEXT,
+      max_viewers INTEGER,
       opened_count INTEGER NOT NULL DEFAULT 0,
       last_opened_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -133,12 +136,43 @@ export function initDb() {
       last_refresh_at INTEGER,
       last_error TEXT
     );
+    CREATE TABLE IF NOT EXISTS share_viewers (
+      id INTEGER PRIMARY KEY,
+      token TEXT UNIQUE NOT NULL,
+      share_kind TEXT NOT NULL,
+      share_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      first_seen_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      stream_last_seen_at INTEGER,
+      wants_stream INTEGER NOT NULL DEFAULT 0,
+      waitlist_joined_at INTEGER,
+      stream_granted_at INTEGER,
+      kicked_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_share_viewers_share ON share_viewers(share_kind, share_id, last_seen_at);
+    CREATE TABLE IF NOT EXISTS share_chat_messages (
+      id INTEGER PRIMARY KEY,
+      share_kind TEXT NOT NULL,
+      share_id INTEGER NOT NULL,
+      viewer_token TEXT NOT NULL,
+      username TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_share_chat_share ON share_chat_messages(share_kind, share_id, created_at);
     INSERT OR IGNORE INTO refresh_state(id) VALUES(1);
   `);
 
   ensureColumn("share_links", "opened_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_links", "last_opened_at", "INTEGER");
+  ensureColumn("share_links", "max_viewers", "INTEGER");
   ensureColumn("static_shares", "icon", "TEXT");
+  ensureColumn("static_shares", "max_viewers", "INTEGER");
+  ensureColumn("epg_programs", "updated_at", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("share_viewers", "wants_stream", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("share_viewers", "waitlist_joined_at", "INTEGER");
+  ensureColumn("share_viewers", "stream_granted_at", "INTEGER");
 
   const now = Math.floor(Date.now() / 1000);
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(config.appUsername);

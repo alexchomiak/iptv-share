@@ -76,7 +76,14 @@ function attachMpegTs(video, source, setMessage) {
   };
 }
 
-function Player({ src, hlsSrc, kind }) {
+function withViewerToken(source, viewerToken) {
+  if (!source || !viewerToken) return source;
+  const url = new URL(source, window.location.origin);
+  url.searchParams.set("viewer", viewerToken);
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const videoRef = React.useRef(null);
   const [message, setMessage] = useState("");
 
@@ -97,38 +104,50 @@ function Player({ src, hlsSrc, kind }) {
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.paused) setMessage("");
     };
     const reportNativeError = () => setMessage(describeVideoError(video, kind === "mpegts" && hlsSrc ? "HLS remux" : "Native video"));
+    const reportActive = () => onPlaybackActive?.(true);
+    const reportInactive = () => onPlaybackActive?.(false);
     video.addEventListener("playing", clearRecoveredError);
+    video.addEventListener("playing", reportActive);
+    video.addEventListener("pause", reportInactive);
+    video.addEventListener("ended", reportInactive);
     video.addEventListener("canplay", clearRecoveredError);
     video.addEventListener("error", reportNativeError);
 
     let cleanup = () => {};
+    const streamSrc = withViewerToken(src, viewerToken);
+    const streamHlsSrc = withViewerToken(hlsSrc, viewerToken);
+
     if (kind === "hls" && nativeHlsSupported) {
-      cleanup = attachNativeVideo(video, src);
+      cleanup = attachNativeVideo(video, streamSrc);
     } else if (kind === "hls" && Hls.isSupported()) {
-      cleanup = attachHlsJs(video, src, setMessage);
-    } else if (kind === "mpegts" && hlsSrc && nativeHlsSupported && appleTouchDevice) {
-      cleanup = attachNativeVideo(video, hlsSrc);
+      cleanup = attachHlsJs(video, streamSrc, setMessage);
+    } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported && appleTouchDevice) {
+      cleanup = attachNativeVideo(video, streamHlsSrc);
     } else if (kind === "mpegts" && mpegts.getFeatureList().mseLivePlayback) {
-      cleanup = attachMpegTs(video, src, setMessage);
-    } else if (kind === "mpegts" && hlsSrc && nativeHlsSupported) {
-      cleanup = attachNativeVideo(video, hlsSrc);
-    } else if (kind === "mpegts" && hlsSrc && Hls.isSupported()) {
-      cleanup = attachHlsJs(video, hlsSrc, setMessage);
+      cleanup = attachMpegTs(video, streamSrc, setMessage);
+    } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported) {
+      cleanup = attachNativeVideo(video, streamHlsSrc);
+    } else if (kind === "mpegts" && streamHlsSrc && Hls.isSupported()) {
+      cleanup = attachHlsJs(video, streamHlsSrc, setMessage);
     } else {
       if (kind === "mpegts") setMessage("This browser does not support MPEG-TS playback through Media Source Extensions, and no HLS remux URL is available.");
-      cleanup = attachNativeVideo(video, src);
+      cleanup = attachNativeVideo(video, streamSrc);
     }
 
     return () => {
       video.removeEventListener("playing", clearRecoveredError);
+      video.removeEventListener("playing", reportActive);
+      video.removeEventListener("pause", reportInactive);
+      video.removeEventListener("ended", reportInactive);
       video.removeEventListener("canplay", clearRecoveredError);
       video.removeEventListener("error", reportNativeError);
+      onPlaybackActive?.(false);
       cleanup();
       video.pause();
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, hlsSrc, kind]);
+  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive]);
 
   return (
     <section className="playerArea">

@@ -192,6 +192,10 @@ export function espnLeagues() {
   return Object.entries(LEAGUES).map(([key, value]) => ({ key, ...value }));
 }
 
+export function espnLiveRefreshSeconds(league = "nfl") {
+  return config.espnLiveCacheSecondsByLeague?.[league] || config.espnLiveCacheSeconds;
+}
+
 export async function searchEspnGames({ league = "nfl", q = "", start, end, ttlSeconds = config.espnSearchCacheSeconds }) {
   const selected = LEAGUES[league] || LEAGUES.nfl;
   const startDate = start ? new Date(Number(start) * 1000) : new Date();
@@ -217,6 +221,6 @@ export async function getEspnGameSummary({ league = "nfl", eventId }) {
   const selected = LEAGUES[league] || LEAGUES.nfl;
   const url = new URL(`https://site.api.espn.com/apis/site/v2/sports/${selected.sport}/${selected.league}/summary`);
   url.searchParams.set("event", eventId);
-  const result = await fetchJsonCached(url.toString(), config.espnLiveCacheSeconds);
+  const result = await fetchJsonCached(url.toString(), espnLiveRefreshSeconds(league));
   return { ...result, summary: normalizeGameSummary(result.payload, league) };
 }

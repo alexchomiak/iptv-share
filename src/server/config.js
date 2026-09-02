@@ -3,6 +3,10 @@ import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
+function numberEnv(name, fallback) {
+  return Number(process.env[name] || fallback);
+}
+
 export const config = {
   rootDir,
   port: Number(process.env.PORT || 8080),
@@ -20,7 +24,14 @@ export const config = {
   ffmpegHwaccel: String(process.env.FFMPEG_HWACCEL || "none").toLowerCase(),
   ffmpegVaapiDevice: process.env.FFMPEG_VAAPI_DEVICE || "/dev/dri/renderD128",
   espnSearchCacheSeconds: Number(process.env.ESPN_SEARCH_CACHE_SECONDS || 21600),
-  espnLiveCacheSeconds: Number(process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+  espnLiveCacheSeconds: numberEnv("ESPN_LIVE_CACHE_SECONDS", 60),
+  espnLiveCacheSecondsByLeague: {
+    nfl: numberEnv("ESPN_LIVE_CACHE_SECONDS_NFL", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+    mlb: numberEnv("ESPN_LIVE_CACHE_SECONDS_MLB", process.env.ESPN_LIVE_CACHE_SECONDS || 150),
+    nba: numberEnv("ESPN_LIVE_CACHE_SECONDS_NBA", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+    ncaafb: numberEnv("ESPN_LIVE_CACHE_SECONDS_NCAAFB", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+    ncaamb: numberEnv("ESPN_LIVE_CACHE_SECONDS_NCAAMB", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+  },
   espnMaxRequestsPerDay: Number(process.env.ESPN_MAX_REQUESTS_PER_DAY || 2000),
   nodeEnv: process.env.NODE_ENV || "production",
 };

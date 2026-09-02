@@ -23,7 +23,8 @@ ENV DATABASE_PATH=/data/app.sqlite
 
 WORKDIR /app
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ffmpeg intel-media-va-driver libva-drm2 mesa-va-drivers vainfo \
+  && apt-get install -y --no-install-recommends ffmpeg libva-drm2 mesa-va-drivers vainfo \
+  && if [ "$(dpkg --print-architecture)" = "amd64" ]; then apt-get install -y --no-install-recommends intel-media-va-driver; fi \
   && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

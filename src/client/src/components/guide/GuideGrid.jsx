@@ -27,7 +27,10 @@ function GuideGrid({ channels, programs, start, end, selectedChannelId, selected
             <div key={channel.id} className="guideRow">
               <button className={`channelCell ${selectedChannelId === channel.id ? "active" : ""}`} type="button" onClick={() => onChannelSelect(channel.id)}>
                 {channel.logo ? <img src={channel.logo} alt="" /> : <span className="logoFallback">{channel.name.slice(0, 2)}</span>}
-                <span>{channel.name}</span>
+                <span className="channelLabel">
+                  {channel.channel_number ? <small>{channel.channel_number}</small> : null}
+                  <span>{channel.name}</span>
+                </span>
               </button>
               <div className="programLane" style={{ width: `${timelineWidth}px` }}>
                 {nowPercent !== null && <i className="nowMarker" style={{ left: `${nowPercent}%` }} />}

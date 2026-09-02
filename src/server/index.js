@@ -73,8 +73,11 @@ function requireAuth(req, res, next) {
 }
 
 function cleanupExpiredShares() {
+  const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(config.shareAutoDeleteSeconds, now());
+  for (const share of expiredShares) cleanupShareArtifacts("temporary", share.id);
   db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(config.shareAutoDeleteSeconds, now());
   db.prepare("DELETE FROM static_share_events WHERE ends_at + ? < ?").run(config.shareAutoDeleteSeconds, now());
+  cleanupOrphanShareArtifacts();
 }
 
 function cleanSlug(slug) {
@@ -94,6 +97,58 @@ function shareKindColumn(kind) {
   return kind === "static" ? "static" : "temporary";
 }
 
+function destroyViewerStreams(tokens) {
+  for (const token of tokens) {
+    for (const res of activeStreamResponses.get(token) || []) {
+      if (!res.destroyed) res.destroy();
+    }
+    activeStreamResponses.delete(token);
+  }
+}
+
+function cleanupShareArtifacts(kind, shareId, destroyStreams = true) {
+  const shareKind = shareKindColumn(kind);
+  const tokens = db
+    .prepare("SELECT token FROM share_viewers WHERE share_kind = ? AND share_id = ?")
+    .all(shareKind, shareId)
+    .map((row) => row.token);
+  if (destroyStreams) destroyViewerStreams(tokens);
+  db.prepare("DELETE FROM share_chat_messages WHERE share_kind = ? AND share_id = ?").run(shareKind, shareId);
+  db.prepare("DELETE FROM share_viewers WHERE share_kind = ? AND share_id = ?").run(shareKind, shareId);
+  broadcastShareState(kind, shareId);
+}
+
+function cleanupOrphanShareArtifacts() {
+  db.prepare(
+    `
+    DELETE FROM share_chat_messages
+    WHERE share_kind = 'temporary'
+      AND NOT EXISTS (SELECT 1 FROM share_links WHERE share_links.id = share_chat_messages.share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM share_chat_messages
+    WHERE share_kind = 'static'
+      AND NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = share_chat_messages.share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM share_viewers
+    WHERE share_kind = 'temporary'
+      AND NOT EXISTS (SELECT 1 FROM share_links WHERE share_links.id = share_viewers.share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM share_viewers
+    WHERE share_kind = 'static'
+      AND NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = share_viewers.share_id)
+  `,
+  ).run();
+}
+
 function resolveShareBySlug(slug) {
   const staticShare = db.prepare("SELECT * FROM static_shares WHERE slug = ?").get(slug);
   if (staticShare) return { kind: "static", share: staticShare };
@@ -105,6 +160,7 @@ function resolveShareBySlug(slug) {
 function viewerPublicRow(viewer) {
   return {
     id: viewer.id,
+    ids: [viewer.id],
     username: viewer.username,
     first_seen_at: viewer.first_seen_at,
     last_seen_at: viewer.last_seen_at,
@@ -116,11 +172,12 @@ function viewerPublicRow(viewer) {
     streaming: !viewer.kicked_at && Number(viewer.stream_last_seen_at || 0) >= now() - viewerActiveSeconds,
     waiting: !viewer.kicked_at && Boolean(viewer.wants_stream),
     kicked: Boolean(viewer.kicked_at),
+    duplicate_count: 1,
   };
 }
 
 function loadViewers(kind, shareId) {
-  return db
+  const viewers = db
     .prepare(
       `
       SELECT id, username, first_seen_at, last_seen_at, stream_last_seen_at, wants_stream, waitlist_joined_at, stream_granted_at, kicked_at
@@ -131,6 +188,39 @@ function loadViewers(kind, shareId) {
     )
     .all(shareKindColumn(kind), shareId, now() - viewerActiveSeconds, now() - kickedViewerVisibleSeconds)
     .map(viewerPublicRow);
+  const grouped = new Map();
+  for (const viewer of viewers) {
+    const key = viewer.username.trim().toLowerCase();
+    const existing = grouped.get(key);
+    if (!existing) {
+      grouped.set(key, viewer);
+      continue;
+    }
+    existing.ids.push(viewer.id);
+    existing.duplicate_count += 1;
+    existing.first_seen_at = Math.min(existing.first_seen_at, viewer.first_seen_at);
+    existing.last_seen_at = Math.max(existing.last_seen_at, viewer.last_seen_at);
+    existing.stream_last_seen_at = Math.max(Number(existing.stream_last_seen_at || 0), Number(viewer.stream_last_seen_at || 0)) || null;
+    existing.waitlist_joined_at = existing.waitlist_joined_at && viewer.waitlist_joined_at
+      ? Math.min(existing.waitlist_joined_at, viewer.waitlist_joined_at)
+      : existing.waitlist_joined_at || viewer.waitlist_joined_at;
+    existing.stream_granted_at = Math.max(Number(existing.stream_granted_at || 0), Number(viewer.stream_granted_at || 0)) || null;
+    existing.wants_stream = existing.wants_stream || viewer.wants_stream;
+    existing.online = existing.online || viewer.online;
+    existing.streaming = existing.streaming || viewer.streaming;
+    existing.waiting = existing.waiting || viewer.waiting;
+    existing.kicked = existing.kicked && viewer.kicked;
+    if (viewer.streaming || (!existing.online && viewer.online)) {
+      existing.id = viewer.id;
+      existing.username = viewer.username;
+    }
+  }
+  return Array.from(grouped.values()).sort((a, b) => {
+    if (a.kicked !== b.kicked) return a.kicked ? 1 : -1;
+    if (a.streaming !== b.streaming) return a.streaming ? -1 : 1;
+    if (a.waiting !== b.waiting) return a.waiting ? -1 : 1;
+    return b.last_seen_at - a.last_seen_at;
+  });
 }
 
 function loadRecentChat(kind, shareId) {
@@ -181,8 +271,12 @@ function activeStreamCount(kind, shareId) {
     .prepare(
       `
       SELECT COUNT(*) AS total
-      FROM share_viewers
-      WHERE share_kind = ? AND share_id = ? AND kicked_at IS NULL AND (stream_last_seen_at >= ? OR stream_granted_at >= ?)
+      FROM (
+        SELECT LOWER(username)
+        FROM share_viewers
+        WHERE share_kind = ? AND share_id = ? AND kicked_at IS NULL AND (stream_last_seen_at >= ? OR stream_granted_at >= ?)
+        GROUP BY LOWER(username)
+      )
     `,
     )
     .get(shareKindColumn(kind), shareId, now() - viewerActiveSeconds, now() - viewerActiveSeconds).total;
@@ -193,24 +287,35 @@ function actualStreamingCount(kind, shareId) {
     .prepare(
       `
       SELECT COUNT(*) AS total
-      FROM share_viewers
-      WHERE share_kind = ? AND share_id = ? AND kicked_at IS NULL AND stream_last_seen_at >= ?
+      FROM (
+        SELECT LOWER(username)
+        FROM share_viewers
+        WHERE share_kind = ? AND share_id = ? AND kicked_at IS NULL AND stream_last_seen_at >= ?
+        GROUP BY LOWER(username)
+      )
     `,
     )
     .get(shareKindColumn(kind), shareId, now() - viewerActiveSeconds).total;
 }
 
 function waitingViewers(kind, shareId) {
-  return db
+  const rows = db
     .prepare(
       `
-      SELECT id, token
+      SELECT id, token, username
       FROM share_viewers
       WHERE share_kind = ? AND share_id = ? AND kicked_at IS NULL AND wants_stream = 1 AND last_seen_at >= ?
       ORDER BY waitlist_joined_at, id
     `,
     )
     .all(shareKindColumn(kind), shareId, now() - viewerActiveSeconds);
+  const seen = new Set();
+  return rows.filter((viewer) => {
+    const key = viewer.username.trim().toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function waitlistPosition(kind, shareId, token) {
@@ -294,18 +399,23 @@ function broadcastChat(kind, shareId, message) {
 
 function kickViewer(kind, shareId, viewerId) {
   const viewer = db
-    .prepare("SELECT token FROM share_viewers WHERE share_kind = ? AND share_id = ? AND id = ?")
+    .prepare("SELECT username FROM share_viewers WHERE share_kind = ? AND share_id = ? AND id = ?")
     .get(shareKindColumn(kind), shareId, viewerId);
+  if (!viewer) return { changes: 0 };
+  const tokens = db
+    .prepare("SELECT token FROM share_viewers WHERE share_kind = ? AND share_id = ? AND LOWER(username) = LOWER(?)")
+    .all(shareKindColumn(kind), shareId, viewer.username)
+    .map((row) => row.token);
   const result = db
-    .prepare("UPDATE share_viewers SET kicked_at = ?, stream_last_seen_at = NULL WHERE share_kind = ? AND share_id = ? AND id = ?")
-    .run(now(), shareKindColumn(kind), shareId, viewerId);
-  if (viewer?.token) {
-    for (const res of activeStreamResponses.get(viewer.token) || []) {
+    .prepare("UPDATE share_viewers SET kicked_at = ?, stream_last_seen_at = NULL WHERE share_kind = ? AND share_id = ? AND LOWER(username) = LOWER(?)")
+    .run(now(), shareKindColumn(kind), shareId, viewer.username);
+  for (const token of tokens) {
+    for (const res of activeStreamResponses.get(token) || []) {
       if (!res.destroyed) res.destroy();
     }
-    activeStreamResponses.delete(viewer.token);
+    activeStreamResponses.delete(token);
     for (const ws of viewerSockets.get(shareSocketKey(kind, shareId)) || []) {
-      if (ws.viewerToken === viewer.token) {
+      if (ws.viewerToken === token) {
         sendJson(ws, { type: "kicked" });
         ws.close();
       }
@@ -316,15 +426,19 @@ function kickViewer(kind, shareId, viewerId) {
 }
 
 function unkickViewer(kind, shareId, viewerId) {
+  const viewer = db
+    .prepare("SELECT username FROM share_viewers WHERE share_kind = ? AND share_id = ? AND id = ?")
+    .get(shareKindColumn(kind), shareId, viewerId);
+  if (!viewer) return { changes: 0 };
   const result = db
     .prepare(
       `
       UPDATE share_viewers
       SET kicked_at = NULL, wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = NULL, stream_last_seen_at = NULL, last_seen_at = ?
-      WHERE share_kind = ? AND share_id = ? AND id = ?
+      WHERE share_kind = ? AND share_id = ? AND LOWER(username) = LOWER(?)
     `,
     )
-    .run(now(), shareKindColumn(kind), shareId, viewerId);
+    .run(now(), shareKindColumn(kind), shareId, viewer.username);
   promoteWaitlist(kind, shareId);
   broadcastShareState(kind, shareId);
   return result;
@@ -463,7 +577,10 @@ app.post("/api/refresh", requireAuth, async (_req, res) => {
 
 app.get("/api/channels", requireAuth, (_req, res) => {
   const channels = db
-    .prepare("SELECT * FROM channels ORDER BY group_name, name")
+    .prepare(
+      `SELECT * FROM channels
+       ORDER BY channel_sort IS NULL, channel_sort, group_name COLLATE NOCASE, name COLLATE NOCASE`,
+    )
     .all()
     .map((channel) => ({
       ...channel,
@@ -664,6 +781,8 @@ app.post("/api/shares", requireAuth, (req, res) => {
 
     const insertItem = db.prepare("INSERT INTO share_link_items(share_id, program_id, position) VALUES (?, ?, ?)");
     selectedPrograms.forEach((program, index) => insertItem.run(result.lastInsertRowid, program.id, index));
+    cleanupShareArtifacts("temporary", result.lastInsertRowid, false);
+    return result.lastInsertRowid;
   });
 
   try {
@@ -688,12 +807,13 @@ app.post("/api/static-shares", requireAuth, (req, res) => {
   const viewerLimit = Number(maxViewers) > 0 ? Number(maxViewers) : null;
   try {
     if (db.prepare("SELECT id FROM share_links WHERE slug = ?").get(slug)) throw new Error("That link name is already used");
-    db.prepare(
+    const result = db.prepare(
       `
       INSERT INTO static_shares(slug, title, description, icon, password_hash, max_viewers, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
     ).run(slug, title, description, icon, passwordHash, viewerLimit, now(), now());
+    cleanupShareArtifacts("static", result.lastInsertRowid, false);
     const base = config.publicBaseUrl.replace(/\/$/, "");
     res.json({ slug, url: base ? `${base}/s/${slug}` : `/s/${slug}` });
   } catch (error) {
@@ -772,6 +892,12 @@ app.get("/api/shares", requireAuth, (_req, res) => {
 });
 
 app.delete("/api/shares/:id", requireAuth, (req, res) => {
+  const share = loadShareById(req.params.id);
+  if (!share) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  cleanupShareArtifacts("temporary", share.id);
   const result = db.prepare("DELETE FROM share_links WHERE id = ?").run(req.params.id);
   if (!result.changes) {
     res.status(404).json({ error: "not found" });
@@ -1157,7 +1283,13 @@ app.get("/api/static-shares/:id/icon", requireAuth, async (req, res) => {
 });
 
 app.delete("/api/static-shares/:id", requireAuth, (req, res) => {
-  const result = db.prepare("DELETE FROM static_shares WHERE id = ?").run(req.params.id);
+  const share = loadStaticShare(req.params.id);
+  if (!share) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  cleanupShareArtifacts("static", share.id);
+  const result = db.prepare("DELETE FROM static_shares WHERE id = ?").run(share.id);
   if (!result.changes) {
     res.status(404).json({ error: "not found" });
     return;

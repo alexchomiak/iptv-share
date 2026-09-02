@@ -30,6 +30,8 @@ export function initDb() {
       name TEXT NOT NULL,
       logo TEXT,
       group_name TEXT,
+      channel_number TEXT,
+      channel_sort INTEGER,
       stream_url TEXT NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -52,7 +54,7 @@ export function initDb() {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_tvg_id ON channels(tvg_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_unique ON epg_programs(channel_key, start_at, end_at, title);
     CREATE TABLE IF NOT EXISTS share_links (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
       title TEXT,
       channel_id INTEGER NOT NULL,
@@ -67,7 +69,7 @@ export function initDb() {
       FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS share_link_items (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       share_id INTEGER NOT NULL,
       program_id INTEGER NOT NULL,
       position INTEGER NOT NULL,
@@ -75,7 +77,7 @@ export function initDb() {
       FOREIGN KEY(program_id) REFERENCES epg_programs(id) ON DELETE CASCADE
     );
     CREATE TABLE IF NOT EXISTS static_shares (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       slug TEXT UNIQUE NOT NULL,
       title TEXT NOT NULL,
       description TEXT,
@@ -88,7 +90,7 @@ export function initDb() {
       updated_at INTEGER NOT NULL
     );
     CREATE TABLE IF NOT EXISTS static_share_events (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       static_share_id INTEGER NOT NULL,
       program_id INTEGER,
       channel_id INTEGER NOT NULL,
@@ -137,7 +139,7 @@ export function initDb() {
       last_error TEXT
     );
     CREATE TABLE IF NOT EXISTS share_viewers (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       token TEXT UNIQUE NOT NULL,
       share_kind TEXT NOT NULL,
       share_id INTEGER NOT NULL,
@@ -152,7 +154,7 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_share_viewers_share ON share_viewers(share_kind, share_id, last_seen_at);
     CREATE TABLE IF NOT EXISTS share_chat_messages (
-      id INTEGER PRIMARY KEY,
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
       share_kind TEXT NOT NULL,
       share_id INTEGER NOT NULL,
       viewer_token TEXT NOT NULL,
@@ -173,6 +175,8 @@ export function initDb() {
   ensureColumn("share_viewers", "wants_stream", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_viewers", "waitlist_joined_at", "INTEGER");
   ensureColumn("share_viewers", "stream_granted_at", "INTEGER");
+  ensureColumn("channels", "channel_number", "TEXT");
+  ensureColumn("channels", "channel_sort", "INTEGER");
 
   const now = Math.floor(Date.now() / 1000);
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(config.appUsername);

@@ -9,6 +9,20 @@ function now() {
   return Math.floor(Date.now() / 1000);
 }
 
+function firstAttr(attrs, keys) {
+  for (const key of keys) {
+    const value = attrs[key];
+    if (value && String(value).trim()) return String(value).trim();
+  }
+  return "";
+}
+
+function parseChannelSort(channelNumber, playlistIndex) {
+  const match = String(channelNumber || "").match(/\d+(?:\.\d+)?/);
+  if (!match) return 100000000 + playlistIndex;
+  return Math.round(Number(match[0]) * 1000);
+}
+
 async function readUrlOrFile(source) {
   if (source.startsWith("http://") || source.startsWith("https://")) {
     const response = await fetch(source, { headers: { "User-Agent": "iptv-share/0.2" } });
@@ -21,6 +35,7 @@ async function readUrlOrFile(source) {
 export function parseM3u(text) {
   const channels = [];
   let current = null;
+  let playlistIndex = 0;
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
@@ -28,14 +43,18 @@ export function parseM3u(text) {
       const attrs = {};
       for (const match of line.matchAll(attrPattern)) attrs[match[1]] = match[2];
       const name = line.includes(",") ? line.split(",").pop().trim() : attrs["tvg-name"] || "Channel";
+      const channelNumber = firstAttr(attrs, ["tvg-chno", "tvg-ch", "tvg-number", "tvg-no", "channel-number", "ch-number"]);
       current = {
         tvgId: attrs["tvg-id"] || attrs["channel-id"] || name,
         name: attrs["tvg-name"] || name,
         logo: attrs["tvg-logo"] || "",
         groupName: attrs["group-title"] || "Other",
+        channelNumber,
+        channelSort: parseChannelSort(channelNumber, playlistIndex),
       };
     } else if (current && !line.startsWith("#")) {
       channels.push({ ...current, streamUrl: line });
+      playlistIndex += 1;
       current = null;
     }
   }
@@ -93,12 +112,14 @@ export async function refreshSources() {
       const channelByKey = new Map();
       const channelByName = new Map();
       const insertChannel = db.prepare(`
-        INSERT INTO channels(tvg_id, name, logo, group_name, stream_url, updated_at)
-        VALUES (@tvgId, @name, @logo, @groupName, @streamUrl, @updatedAt)
+        INSERT INTO channels(tvg_id, name, logo, group_name, channel_number, channel_sort, stream_url, updated_at)
+        VALUES (@tvgId, @name, @logo, @groupName, @channelNumber, @channelSort, @streamUrl, @updatedAt)
         ON CONFLICT(tvg_id) DO UPDATE SET
           name = excluded.name,
           logo = excluded.logo,
           group_name = excluded.group_name,
+          channel_number = excluded.channel_number,
+          channel_sort = excluded.channel_sort,
           stream_url = excluded.stream_url,
           updated_at = excluded.updated_at
       `);

@@ -14,6 +14,11 @@ services:
       M3U_URL: http://192.168.0.37:9191/output/m3u
       EPG_URL: http://192.168.0.37:9191/output/epg
       PUBLIC_BASE_URL: http://localhost:8080
+      SHARE_AUTO_DELETE_SECONDS: 300
+      TRANSCODE_MPEGTS: "true"
+      ESPN_SEARCH_CACHE_SECONDS: 21600
+      ESPN_LIVE_CACHE_SECONDS: 60
+      ESPN_MAX_REQUESTS_PER_DAY: 2000
     volumes:
       - ./data:/data
     restart: unless-stopped

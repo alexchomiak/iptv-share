@@ -72,6 +72,62 @@ export function initDb() {
       FOREIGN KEY(share_id) REFERENCES share_links(id) ON DELETE CASCADE,
       FOREIGN KEY(program_id) REFERENCES epg_programs(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS static_shares (
+      id INTEGER PRIMARY KEY,
+      slug TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      icon TEXT,
+      password_hash TEXT,
+      opened_count INTEGER NOT NULL DEFAULT 0,
+      last_opened_at INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS static_share_events (
+      id INTEGER PRIMARY KEY,
+      static_share_id INTEGER NOT NULL,
+      program_id INTEGER,
+      channel_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT,
+      icon TEXT,
+      starts_at INTEGER NOT NULL,
+      ends_at INTEGER NOT NULL,
+      espn_league TEXT,
+      espn_event_id TEXT,
+      espn_name TEXT,
+      espn_short_name TEXT,
+      espn_date TEXT,
+      espn_status TEXT,
+      espn_home_name TEXT,
+      espn_home_abbreviation TEXT,
+      espn_home_logo TEXT,
+      espn_away_name TEXT,
+      espn_away_abbreviation TEXT,
+      espn_away_logo TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY(static_share_id) REFERENCES static_shares(id) ON DELETE CASCADE,
+      FOREIGN KEY(program_id) REFERENCES epg_programs(id) ON DELETE SET NULL,
+      FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_static_events_share_time ON static_share_events(static_share_id, starts_at);
+    CREATE INDEX IF NOT EXISTS idx_static_events_time ON static_share_events(starts_at, ends_at);
+    CREATE TABLE IF NOT EXISTS espn_cache (
+      cache_key TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_espn_cache_expires ON espn_cache(expires_at);
+    CREATE TABLE IF NOT EXISTS espn_request_log (
+      id INTEGER PRIMARY KEY,
+      cache_key TEXT NOT NULL,
+      requested_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_espn_request_log_time ON espn_request_log(requested_at);
     CREATE TABLE IF NOT EXISTS refresh_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       last_refresh_at INTEGER,
@@ -82,6 +138,7 @@ export function initDb() {
 
   ensureColumn("share_links", "opened_count", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_links", "last_opened_at", "INTEGER");
+  ensureColumn("static_shares", "icon", "TEXT");
 
   const now = Math.floor(Date.now() / 1000);
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(config.appUsername);

@@ -15,6 +15,10 @@ export const config = {
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
   epgRefreshSeconds: Number(process.env.EPG_REFRESH_SECONDS || 21600),
   streamGraceSeconds: Number(process.env.STREAM_GRACE_SECONDS || 0),
+  shareAutoDeleteSeconds: Number(process.env.SHARE_AUTO_DELETE_SECONDS || 300),
   transcodeMpegTs: process.env.TRANSCODE_MPEGTS !== "false",
+  espnSearchCacheSeconds: Number(process.env.ESPN_SEARCH_CACHE_SECONDS || 21600),
+  espnLiveCacheSeconds: Number(process.env.ESPN_LIVE_CACHE_SECONDS || 60),
+  espnMaxRequestsPerDay: Number(process.env.ESPN_MAX_REQUESTS_PER_DAY || 2000),
   nodeEnv: process.env.NODE_ENV || "production",
 };

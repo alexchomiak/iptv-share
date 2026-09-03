@@ -101,6 +101,11 @@ function AdminSharePage({ shareRef }) {
   }, []);
 
   useEffect(() => {
+    setSportsSummary(null);
+    setSportsMessage("");
+  }, [shareRef, share?.active_event_id]);
+
+  useEffect(() => {
     if (!share) return undefined;
     const current = Math.floor(Date.now() / 1000);
     const schedule = [...(share.events || share.programs || [])].sort((a, b) => eventStart(a) - eventStart(b));
@@ -119,12 +124,10 @@ function AdminSharePage({ shareRef }) {
 
   useEffect(() => {
     if (!share || share.kind !== "static" || !share.active_event_id || !streamActive) {
-      setSportsSummary(null);
       return undefined;
     }
     const active = (share.events || []).find((event) => event.id === share.active_event_id);
     if (!active?.espn?.id) {
-      setSportsSummary(null);
       return undefined;
     }
     let cancelled = false;
@@ -134,7 +137,7 @@ function AdminSharePage({ shareRef }) {
       const payload = await response.json();
       if (cancelled) return;
       if (response.ok) {
-        setSportsSummary(payload.summary ? { ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt } : null);
+        if (payload.summary) setSportsSummary({ ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt });
         setSportsMessage("");
         if (sportsSummaryIsFinal(payload.summary)) loadShare();
         timer = setTimeout(loadSportsSummary, Math.max(30, Number(payload.refreshSeconds || 60)) * 1000);

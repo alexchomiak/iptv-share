@@ -52,6 +52,11 @@ function SharePage({ slug }) {
   }, []);
 
   useEffect(() => {
+    setSportsSummary(null);
+    setSportsMessage("");
+  }, [slug, share?.active_event_id]);
+
+  useEffect(() => {
     if (!share || share.locked) return undefined;
     const current = Math.floor(Date.now() / 1000);
     const schedule = [...(share.events || share.programs || [])].sort((a, b) => eventStart(a) - eventStart(b));
@@ -70,7 +75,6 @@ function SharePage({ slug }) {
 
   useEffect(() => {
     if (!share || share.locked || share.kind !== "static" || !share.active_event_id) {
-      setSportsSummary(null);
       return undefined;
     }
     if (!hasActiveStreamViewer) {
@@ -79,7 +83,6 @@ function SharePage({ slug }) {
     }
     const active = (share.events || []).find((event) => event.id === share.active_event_id);
     if (!active?.espn?.id) {
-      setSportsSummary(null);
       return undefined;
     }
     let cancelled = false;
@@ -90,7 +93,6 @@ function SharePage({ slug }) {
       if (cancelled) return;
       if (response.ok) {
         if (payload.skipped || !payload.summary) {
-          setSportsSummary(null);
           setSportsMessage("");
         } else {
           setSportsSummary({ ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt });

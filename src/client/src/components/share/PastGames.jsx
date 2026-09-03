@@ -27,7 +27,7 @@ function ArchiveTeam({ entry, align = "left" }) {
   );
 }
 
-function PastGames({ games = [] }) {
+function PastGames({ games = [], admin = false, onDeleteGame }) {
   const [openGameId, setOpenGameId] = useState(null);
   if (!games.length) return null;
 
@@ -47,33 +47,40 @@ function PastGames({ games = [] }) {
         const status = summary?.statusDetail || summary?.status || "Final";
         return (
           <article key={game.id} className="pastGameCard">
-            <button type="button" onClick={() => setOpenGameId(open ? null : game.id)}>
-              {away || home ? (
-                <div className="archiveScoreRow">
-                  <ArchiveTeam entry={away} />
-                  <div className="archiveGameMeta">
-                    <strong>{status}</strong>
-                    <small>{formatDateTime.format(new Date(eventStart(game) * 1000))}</small>
+            <div className="pastGameCardTop">
+              <button type="button" onClick={() => setOpenGameId(open ? null : game.id)}>
+                {away || home ? (
+                  <div className="archiveScoreRow">
+                    <ArchiveTeam entry={away} />
+                    <div className="archiveGameMeta">
+                      <strong>{status}</strong>
+                      <small>{formatDateTime.format(new Date(eventStart(game) * 1000))}</small>
+                    </div>
+                    <ArchiveTeam entry={home} align="right" />
                   </div>
-                  <ArchiveTeam entry={home} align="right" />
-                </div>
-              ) : (
-                <div className="archiveFallbackRow">
-                  {game.icon_url && <img src={game.icon_url} alt="" />}
+                ) : (
+                  <div className="archiveFallbackRow">
+                    {game.icon_url && <img src={game.icon_url} alt="" />}
+                    <span>
+                      <strong>{title}</strong>
+                      <small>{formatDateTime.format(new Date(eventStart(game) * 1000))} - {formatDateTime.format(new Date(eventEnd(game) * 1000))}</small>
+                    </span>
+                  </div>
+                )}
+                <div className="archiveSummaryRow">
                   <span>
                     <strong>{title}</strong>
-                    <small>{formatDateTime.format(new Date(eventStart(game) * 1000))} - {formatDateTime.format(new Date(eventEnd(game) * 1000))}</small>
+                    {game.description && <small>{game.description}</small>}
                   </span>
+                  <b>{open ? "Hide Box Score" : "View Box Score"}</b>
                 </div>
+              </button>
+              {admin && (
+                <button type="button" className="danger archiveDeleteButton" onClick={() => onDeleteGame?.(game.id)}>
+                  Remove Archive
+                </button>
               )}
-              <div className="archiveSummaryRow">
-                <span>
-                  <strong>{title}</strong>
-                  {game.description && <small>{game.description}</small>}
-                </span>
-                <b>{open ? "Hide Box Score" : "View Box Score"}</b>
-              </div>
-            </button>
+            </div>
             {open && (
               summary
                 ? <SportsPanel summary={{ ...summary, refreshSeconds: 0, fetchedAt: game.espn_final_fetched_at }} hideScorecard />

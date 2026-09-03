@@ -115,6 +115,8 @@ h2 {
 
 .guidePageHeader {
   grid-area: guideHeader;
+  position: relative;
+  z-index: 60;
   display: grid;
   gap: 14px;
   padding: 14px 20px 16px;
@@ -166,7 +168,7 @@ h2 {
 
 .searchResults {
   position: absolute;
-  z-index: 20;
+  z-index: 70;
   top: calc(100% + 8px);
   left: 0;
   width: min(720px, 90vw);
@@ -180,33 +182,55 @@ h2 {
 
 .searchResults button {
   width: 100%;
-  min-height: 58px;
+  min-height: 76px;
   display: grid;
-  grid-template-columns: 40px 1fr;
-  align-items: center;
-  gap: 10px;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
   border: 0;
   border-bottom: 1px solid rgba(57, 68, 82, 0.7);
   border-radius: 0;
   background: transparent;
+  padding: 12px 14px;
   text-align: left;
 }
 
 .searchResults img {
-  width: 34px;
-  height: 34px;
-  object-fit: contain;
+  width: 68px;
+  height: 50px;
+  object-fit: cover;
   border-radius: 6px;
   background: #0f1217;
 }
 
 .searchResults strong,
-.searchResults small {
+.searchResults small,
+.searchResults em,
+.searchResults p {
   display: block;
+  min-width: 0;
 }
 
 .searchResults small {
   color: var(--muted);
+}
+
+.searchResults em {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.searchResults p {
+  display: -webkit-box;
+  margin-top: 7px;
+  overflow: hidden;
+  color: #d5dbea;
+  font-size: 13px;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .timeControls {
@@ -1442,7 +1466,7 @@ h2 {
 
 .adminWatchBar {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+  grid-template-columns: minmax(0, 1fr) repeat(4, auto);
   align-items: start;
   gap: 12px;
   padding: 12px 20px;
@@ -1470,6 +1494,15 @@ h2 {
   border: 1px solid rgba(57, 68, 82, 0.72);
   border-radius: 8px;
   background: #101720;
+}
+
+.adminWatchBar .adminWatchActions {
+  align-items: center;
+}
+
+.adminWatchActions button {
+  min-height: 38px;
+  white-space: nowrap;
 }
 
 .adminWatchBar strong,
@@ -2237,7 +2270,15 @@ h2 {
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.26);
 }
 
-.pastGameCard > button {
+.pastGameCardTop {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 0;
+}
+
+.pastGameCardTop > button:first-child {
   width: 100%;
   height: auto;
   display: grid;
@@ -2247,6 +2288,11 @@ h2 {
   border-radius: 0;
   background: transparent;
   text-align: left;
+}
+
+.archiveDeleteButton {
+  margin: 16px 16px 0 0;
+  white-space: nowrap;
 }
 
 .archiveFallbackRow,
@@ -2434,6 +2480,7 @@ h2 {
   .adminScheduleProgramList .programRow.noMedia,
   .shareChat,
   .watchLayout,
+  .pastGameCardTop,
   .chatComposer,
   .viewerAdminList article {
     grid-template-columns: 1fr;
@@ -2503,6 +2550,10 @@ h2 {
     padding: 8px 0;
     border-top: 1px solid rgba(57, 68, 82, 0.55);
     border-bottom: 1px solid rgba(57, 68, 82, 0.55);
+  }
+
+  .archiveDeleteButton {
+    margin: 0 16px 16px;
   }
 
   .archiveTeam.right {

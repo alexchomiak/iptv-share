@@ -11,6 +11,7 @@ function AppGuide() {
   const [channels, setChannels] = useState([]);
   const [programs, setPrograms] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
+  const [searchResultsOpen, setSearchResultsOpen] = useState(false);
   const [status, setStatus] = useState("Loading guide...");
   const [search, setSearch] = useState("");
   const [group, setGroup] = useState("");
@@ -58,6 +59,7 @@ function AppGuide() {
     const needle = search.trim();
     if (needle.length < 2) {
       setSearchResults([]);
+      setSearchResultsOpen(false);
       return undefined;
     }
     const controller = new AbortController();
@@ -220,6 +222,7 @@ function AppGuide() {
     setActiveProgram(program);
     setScheduleProgram(program);
     setSearchResults([]);
+    setSearchResultsOpen(false);
   }
 
   const selectedPrograms = Array.from(selectedProgramIds)
@@ -249,19 +252,35 @@ function AppGuide() {
         </div>
 
         <section className="guideCommandBar">
-          <div className="searchBox">
+          <div
+            className="searchBox"
+            onFocus={() => setSearchResultsOpen(true)}
+            onBlur={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget)) setSearchResultsOpen(false);
+            }}
+          >
             <label>
               Search
-              <input value={search} onChange={(event) => setSearch(event.target.value)} type="search" placeholder="Channel or show" />
+              <input
+                value={search}
+                onChange={(event) => {
+                  setSearch(event.target.value);
+                  setSearchResultsOpen(true);
+                }}
+                type="search"
+                placeholder="Channel or show"
+              />
             </label>
-            {searchResults.length > 0 && (
+            {searchResultsOpen && searchResults.length > 0 && (
               <div className="searchResults">
                 {searchResults.map((program) => (
                   <button key={program.id} type="button" onClick={() => openSearchResult(program)}>
-                    {program.channel_logo && <img src={program.channel_logo} alt="" />}
+                    {(program.icon_url || program.channel_logo) && <img src={program.icon_url || program.channel_logo} alt="" />}
                     <span>
                       <strong>{program.title}</strong>
-                      <small>{program.channel_name} · {formatDateTime.format(new Date(program.start_at * 1000))}</small>
+                      <small>{program.channel_name} · {formatDateTime.format(new Date(program.start_at * 1000))} - {formatDateTime.format(new Date(program.end_at * 1000))}</small>
+                      {program.category && <em>{program.category}</em>}
+                      {program.description && <p>{program.description}</p>}
                     </span>
                   </button>
                 ))}

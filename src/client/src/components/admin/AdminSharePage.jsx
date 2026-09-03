@@ -187,6 +187,29 @@ function AdminSharePage({ shareRef }) {
     await loadShare();
   }
 
+  async function clearChat() {
+    if (!share) return;
+    const response = await api(`/api/share-viewers/${share.kind}/${share.id}/chat`, { method: "DELETE" });
+    if (response.ok) {
+      setMessage("Chat cleared.");
+      return;
+    }
+    const payload = await response.json().catch(() => ({}));
+    setMessage(payload.error || "Could not clear chat.");
+  }
+
+  async function removePastGame(gameId) {
+    if (!share || share.kind !== "static") return;
+    const response = await api(`/api/static-shares/${share.id}/past-games/${gameId}`, { method: "DELETE" });
+    if (response.ok) {
+      setMessage("Past game removed.");
+      await loadShare();
+      return;
+    }
+    const payload = await response.json().catch(() => ({}));
+    setMessage(payload.error || "Could not remove past game.");
+  }
+
   if (!share) {
     return (
       <main className="shareShell">
@@ -301,6 +324,9 @@ function AdminSharePage({ shareRef }) {
           <strong>{viewers.filter((viewer) => viewer.kicked).length}</strong>
           <span>removed</span>
         </div>
+        <div className="adminWatchActions">
+          <button type="button" className="danger" onClick={clearChat}>Clear Chat</button>
+        </div>
         {message && <p>{message}</p>}
       </section>
 
@@ -366,7 +392,7 @@ function AdminSharePage({ shareRef }) {
           );
         })}
       </section>
-      {isStaticShare && <PastGames games={share.pastGames || []} />}
+      {isStaticShare && <PastGames games={share.pastGames || []} admin onDeleteGame={removePastGame} />}
     </main>
   );
 }

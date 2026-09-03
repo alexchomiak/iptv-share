@@ -176,6 +176,13 @@ function cleanupShareArtifacts(kind, shareId, destroyStreams = true) {
   if (destroyStreams) destroyViewerStreams(tokens);
   db.prepare("DELETE FROM share_chat_messages WHERE share_kind = ? AND share_id = ?").run(shareKind, shareId);
   db.prepare("DELETE FROM share_viewers WHERE share_kind = ? AND share_id = ?").run(shareKind, shareId);
+  if (shareKind === "static") {
+    db.prepare("DELETE FROM discord_webhook_deliveries WHERE static_share_id = ?").run(shareId);
+    db.prepare("DELETE FROM static_share_past_games WHERE static_share_id = ?").run(shareId);
+    db.prepare("DELETE FROM static_share_events WHERE static_share_id = ?").run(shareId);
+  } else {
+    db.prepare("DELETE FROM share_link_items WHERE share_id = ?").run(shareId);
+  }
   broadcastShareState(kind, shareId);
 }
 
@@ -206,6 +213,31 @@ function cleanupOrphanShareArtifacts() {
     DELETE FROM share_viewers
     WHERE share_kind = 'static'
       AND NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = share_viewers.share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM share_link_items
+    WHERE NOT EXISTS (SELECT 1 FROM share_links WHERE share_links.id = share_link_items.share_id)
+      OR NOT EXISTS (SELECT 1 FROM epg_programs WHERE epg_programs.id = share_link_items.program_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM static_share_events
+    WHERE NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = static_share_events.static_share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM static_share_past_games
+    WHERE NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = static_share_past_games.static_share_id)
+  `,
+  ).run();
+  db.prepare(
+    `
+    DELETE FROM discord_webhook_deliveries
+    WHERE NOT EXISTS (SELECT 1 FROM static_shares WHERE static_shares.id = discord_webhook_deliveries.static_share_id)
   `,
   ).run();
 }
@@ -455,6 +487,16 @@ function broadcastChat(kind, shareId, message) {
   for (const ws of viewerSockets.get(key) || []) sendJson(ws, { type: "chat", message });
   for (const ws of adminSockets) {
     if (!ws.shareFilter || ws.shareFilter === key) sendJson(ws, { type: "chat", shareKind: shareKindColumn(kind), shareId, message });
+  }
+}
+
+function broadcastChatHistory(kind, shareId) {
+  const key = shareSocketKey(kind, shareId);
+  const shareKind = shareKindColumn(kind);
+  const messages = loadRecentChat(shareKind, shareId);
+  for (const ws of viewerSockets.get(key) || []) sendJson(ws, { type: "chatHistory", messages });
+  for (const ws of adminSockets) {
+    if (!ws.shareFilter || ws.shareFilter === key) sendJson(ws, { type: "chatHistory", shareKind, shareId, messages });
   }
 }
 
@@ -1050,6 +1092,19 @@ app.get("/api/share-viewers/:kind/:id", requireAuth, (req, res) => {
     viewers: loadViewers(kind, Number(req.params.id)),
     messages: loadRecentChat(kind, Number(req.params.id)),
   });
+});
+
+app.delete("/api/share-viewers/:kind/:id/chat", requireAuth, (req, res) => {
+  const kind = req.params.kind === "static" ? "static" : "temporary";
+  const shareId = Number(req.params.id);
+  const share = kind === "static" ? loadStaticShare(shareId) : loadShareById(shareId);
+  if (!share) {
+    res.status(404).json({ error: "share not found" });
+    return;
+  }
+  db.prepare("DELETE FROM share_chat_messages WHERE share_kind = ? AND share_id = ?").run(shareKindColumn(kind), shareId);
+  broadcastChatHistory(kind, shareId);
+  res.status(204).end();
 });
 
 app.post("/api/share-viewers/:kind/:id/:viewerId/kick", requireAuth, (req, res) => {
@@ -1825,6 +1880,36 @@ app.get("/api/static-shares/:shareId/past-games/:gameId/image", requireAuth, asy
   } catch {
     res.status(502).end();
   }
+});
+
+app.delete("/api/static-shares/:shareId/past-games/:gameId", requireAuth, (req, res) => {
+  const share = loadStaticShare(req.params.shareId);
+  if (!share) {
+    res.status(404).json({ error: "share not found" });
+    return;
+  }
+  const game = db
+    .prepare("SELECT id, original_event_id FROM static_share_past_games WHERE static_share_id = ? AND id = ?")
+    .get(share.id, req.params.gameId);
+  if (!game) {
+    res.status(404).json({ error: "past game not found" });
+    return;
+  }
+  const result = db
+    .prepare("DELETE FROM static_share_past_games WHERE static_share_id = ? AND id = ?")
+    .run(share.id, req.params.gameId);
+  if (!result.changes) {
+    res.status(404).json({ error: "past game not found" });
+    return;
+  }
+  const liveEventStillExists = game.original_event_id
+    ? db.prepare("SELECT 1 FROM static_share_events WHERE static_share_id = ? AND id = ?").get(share.id, game.original_event_id)
+    : null;
+  if (game.original_event_id && !liveEventStillExists) {
+    db.prepare("DELETE FROM discord_webhook_deliveries WHERE static_share_id = ? AND static_event_id = ?").run(share.id, game.original_event_id);
+  }
+  db.prepare("UPDATE static_shares SET updated_at = ? WHERE id = ?").run(now(), share.id);
+  res.status(204).end();
 });
 
 function loadShare(slug) {

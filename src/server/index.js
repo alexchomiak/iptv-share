@@ -86,7 +86,7 @@ function requireAuth(req, res, next) {
 function cleanupExpiredShares() {
   const cleanupDelay = cleanupDelaySeconds();
   const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(cleanupDelay, now());
-  for (const share of expiredShares) cleanupShareArtifacts("temporary", share.id);
+  for (const share of expiredShares) cleanupTemporaryShareArtifacts(share.id);
   db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(cleanupDelay, now());
   archiveExpiredStaticEvents();
   db.prepare(
@@ -180,10 +180,13 @@ function cleanupShareArtifacts(kind, shareId, destroyStreams = true) {
     db.prepare("DELETE FROM discord_webhook_deliveries WHERE static_share_id = ?").run(shareId);
     db.prepare("DELETE FROM static_share_past_games WHERE static_share_id = ?").run(shareId);
     db.prepare("DELETE FROM static_share_events WHERE static_share_id = ?").run(shareId);
-  } else {
-    db.prepare("DELETE FROM share_link_items WHERE share_id = ?").run(shareId);
   }
   broadcastShareState(kind, shareId);
+}
+
+function cleanupTemporaryShareArtifacts(shareId, destroyStreams = true) {
+  cleanupShareArtifacts("temporary", shareId, destroyStreams);
+  db.prepare("DELETE FROM share_link_items WHERE share_id = ?").run(shareId);
 }
 
 function cleanupOrphanShareArtifacts() {
@@ -600,15 +603,19 @@ async function withViewerStream(token, res, action) {
   }
 }
 
-async function proxyImage(res, url) {
+async function proxyImage(res, url, options = {}) {
   const response = await fetch(url);
   if (!response.ok) {
     res.status(502).end();
     return;
   }
   res.setHeader("Content-Type", response.headers.get("content-type") || "image/png");
-  res.setHeader("Cache-Control", "public, max-age=86400");
+  res.setHeader("Cache-Control", options.cacheControl || "public, max-age=86400");
   Readable.fromWeb(response.body).pipe(res);
+}
+
+function versionedImageUrl(path, version) {
+  return version ? `${path}?v=${encodeURIComponent(version)}` : path;
 }
 
 function staticShareIsUnlocked(req, share) {
@@ -710,6 +717,42 @@ function findActiveShareProgram(shareId) {
     `,
     )
     .get(shareId, config.streamGraceSeconds, now(), now(), config.streamGraceSeconds);
+}
+
+function restoreMissingTemporaryShareItems(share) {
+  if (!share || share.mode !== "programs") return;
+  const existing = db.prepare("SELECT COUNT(*) AS total FROM share_link_items WHERE share_id = ?").get(share.id).total;
+  if (existing > 0 || !share.title) return;
+  const requestedTitles = String(share.title)
+    .split(" + ")
+    .map((title) => title.trim().toLowerCase())
+    .filter(Boolean);
+  if (!requestedTitles.length) return;
+  const remaining = new Map();
+  for (const title of requestedTitles) remaining.set(title, (remaining.get(title) || 0) + 1);
+  const candidates = db
+    .prepare(
+      `
+      SELECT id, title
+      FROM epg_programs
+      WHERE channel_id = ?
+        AND start_at >= ?
+        AND end_at <= ?
+      ORDER BY start_at
+    `,
+    )
+    .all(share.channel_id, share.starts_at, share.ends_at);
+  const insertItem = db.prepare("INSERT INTO share_link_items(share_id, program_id, position) VALUES (?, ?, ?)");
+  let position = 0;
+  for (const program of candidates) {
+    const key = String(program.title || "").trim().toLowerCase();
+    const count = remaining.get(key) || 0;
+    if (!count) continue;
+    insertItem.run(share.id, program.id, position);
+    position += 1;
+    if (count === 1) remaining.delete(key);
+    else remaining.set(key, count - 1);
+  }
 }
 
 app.get("/api/me", (req, res) => {
@@ -1077,7 +1120,7 @@ app.delete("/api/shares/:id", requireAuth, (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
-  cleanupShareArtifacts("temporary", share.id);
+  cleanupTemporaryShareArtifacts(share.id);
   const result = db.prepare("DELETE FROM share_links WHERE id = ?").run(req.params.id);
   if (!result.changes) {
     res.status(404).json({ error: "not found" });
@@ -1144,8 +1187,8 @@ async function adminSafeStaticShare(share) {
     has_password: Boolean(share.password_hash),
     url: `${publicBaseUrl()}/s/${share.slug}`,
     admin_ref: `static-${share.id}`,
-    icon_url: share.icon ? `/api/static-shares/${share.id}/icon` : null,
-    background_image_url: share.background_image ? `/api/static-shares/${share.id}/background` : null,
+    icon_url: share.icon ? versionedImageUrl(`/api/static-shares/${share.id}/icon`, share.updated_at) : null,
+    background_image_url: share.background_image ? versionedImageUrl(`/api/static-shares/${share.id}/background`, share.updated_at) : null,
     active_event_id: activeEvent?.id || null,
     channel_name: activeEvent?.channel_name || "Scheduled stream",
     starts_at: activeEvent?.starts_at || null,
@@ -1163,6 +1206,7 @@ async function adminSafeStaticShare(share) {
 }
 
 function adminSafeTemporaryShare(share) {
+  restoreMissingTemporaryShareItems(share);
   const activeProgram = share.mode === "programs" ? findActiveShareProgram(share.id) : null;
   const streamAvailable = share.mode === "programs" ? Boolean(activeProgram) : shareIsStreamable(share);
   const streamKind = inferStreamKind(activeProgram?.stream_url || share.stream_url);
@@ -1310,13 +1354,14 @@ app.get("/api/admin/stream/:ref", requireAuth, async (req, res) => {
     targetUrl = event.stream_url;
     cutoffWindow = streamCutoffWindow(entitlement);
   } else {
-    if (!shareIsStreamable(resolved.share)) {
-      res.status(403).send("Share is not currently streamable");
-      return;
-    }
+    restoreMissingTemporaryShareItems(resolved.share);
     const activeProgram = resolved.share.mode === "programs" ? findActiveShareProgram(resolved.share.id) : null;
     if (resolved.share.mode === "programs" && !activeProgram) {
       res.status(403).send("No selected program is currently streamable");
+      return;
+    }
+    if (resolved.share.mode !== "programs" && !shareIsStreamable(resolved.share)) {
+      res.status(403).send("Share is not currently streamable");
       return;
     }
     targetUrl = activeProgram?.stream_url || resolved.share.stream_url;
@@ -1682,8 +1727,8 @@ app.get("/api/static-shares/:id", requireAuth, (req, res) => {
   const { password_hash: _passwordHash, ...payload } = share;
   payload.has_password = Boolean(share.password_hash);
   payload.url = `${config.publicBaseUrl.replace(/\/$/, "") || ""}/s/${share.slug}`;
-  payload.icon_url = share.icon ? `/api/static-shares/${share.id}/icon` : null;
-  payload.background_image_url = share.background_image ? `/api/static-shares/${share.id}/background` : null;
+  payload.icon_url = share.icon ? versionedImageUrl(`/api/static-shares/${share.id}/icon`, share.updated_at) : null;
+  payload.background_image_url = share.background_image ? versionedImageUrl(`/api/static-shares/${share.id}/background`, share.updated_at) : null;
   payload.events = loadStaticEvents(share.id);
   payload.pastGames = loadPastGames(share.id);
   res.json({ share: payload });
@@ -1715,8 +1760,8 @@ app.patch("/api/static-shares/:id", requireAuth, (req, res) => {
   const { password_hash: _passwordHash, ...payload } = updated;
   payload.has_password = Boolean(updated.password_hash);
   payload.url = `${config.publicBaseUrl.replace(/\/$/, "") || ""}/s/${updated.slug}`;
-  payload.icon_url = updated.icon ? `/api/static-shares/${updated.id}/icon` : null;
-  payload.background_image_url = updated.background_image ? `/api/static-shares/${updated.id}/background` : null;
+  payload.icon_url = updated.icon ? versionedImageUrl(`/api/static-shares/${updated.id}/icon`, updated.updated_at) : null;
+  payload.background_image_url = updated.background_image ? versionedImageUrl(`/api/static-shares/${updated.id}/background`, updated.updated_at) : null;
   payload.events = loadStaticEvents(updated.id);
   payload.pastGames = loadPastGames(updated.id);
   res.json({ share: payload });
@@ -1729,7 +1774,7 @@ app.get("/api/static-shares/:id/icon", requireAuth, async (req, res) => {
     return;
   }
   try {
-    await proxyImage(res, share.icon);
+    await proxyImage(res, share.icon, { cacheControl: "no-store" });
   } catch {
     res.status(502).end();
   }
@@ -1742,7 +1787,7 @@ app.get("/api/static-shares/:id/background", requireAuth, async (req, res) => {
     return;
   }
   try {
-    await proxyImage(res, share.background_image);
+    await proxyImage(res, share.background_image, { cacheControl: "no-store" });
   } catch {
     res.status(502).end();
   }
@@ -1959,8 +2004,12 @@ app.get("/api/public/share/:slug", async (req, res) => {
     payload.events = events;
     payload.programs = events;
     payload.pastGames = locked ? [] : publicPastGames(staticShare);
-    payload.icon_url = staticShare.icon ? `/api/public/static-share-icon/${encodeURIComponent(staticShare.slug)}` : null;
-    payload.background_image_url = staticShare.background_image ? `/api/public/static-share-background/${encodeURIComponent(staticShare.slug)}` : null;
+    payload.icon_url = staticShare.icon
+      ? versionedImageUrl(`/api/public/static-share-icon/${encodeURIComponent(staticShare.slug)}`, staticShare.updated_at)
+      : null;
+    payload.background_image_url = staticShare.background_image
+      ? versionedImageUrl(`/api/public/static-share-background/${encodeURIComponent(staticShare.slug)}`, staticShare.updated_at)
+      : null;
     payload.server_now = now();
     payload.active_event_id = activeEvent?.id || null;
     payload.channel_name = activeEvent?.channel_name || events.find((event) => event.ends_at >= now())?.channel_name || "Scheduled stream";
@@ -1979,6 +2028,7 @@ app.get("/api/public/share/:slug", async (req, res) => {
     res.status(404).json({ error: "not found" });
     return;
   }
+  restoreMissingTemporaryShareItems(share);
   const locked = !shareIsUnlocked(req, share);
   const programs = locked
     ? []
@@ -2067,7 +2117,7 @@ app.get("/api/public/static-share-icon/:slug", async (req, res) => {
     return;
   }
   try {
-    await proxyImage(res, share.icon);
+    await proxyImage(res, share.icon, { cacheControl: "no-store" });
   } catch {
     res.status(502).end();
   }
@@ -2080,7 +2130,7 @@ app.get("/api/public/static-share-background/:slug", async (req, res) => {
     return;
   }
   try {
-    await proxyImage(res, share.background_image);
+    await proxyImage(res, share.background_image, { cacheControl: "no-store" });
   } catch {
     res.status(502).end();
   }
@@ -2259,13 +2309,18 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     res.status(404).end();
     return;
   }
-  if (!shareIsUnlocked(req, share) || !shareIsStreamable(share)) {
+  restoreMissingTemporaryShareItems(share);
+  if (!shareIsUnlocked(req, share)) {
     res.status(403).send("Share is not currently streamable");
     return;
   }
   const activeProgram = share.mode === "programs" ? findActiveShareProgram(share.id) : null;
   if (share.mode === "programs" && !activeProgram) {
     res.status(403).send("No selected program is currently streamable");
+    return;
+  }
+  if (share.mode !== "programs" && !shareIsStreamable(share)) {
+    res.status(403).send("Share is not currently streamable");
     return;
   }
   const viewerToken = String(req.query.viewer || "");

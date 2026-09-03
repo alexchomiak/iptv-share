@@ -76,6 +76,21 @@ function attachMpegTs(video, source, setMessage) {
   };
 }
 
+function startAfterAttach(video, setMessage) {
+  requestAnimationFrame(() => {
+    const playPromise = video.play();
+    if (!playPromise?.catch) return;
+    playPromise.catch((error) => {
+      if (error?.name === "AbortError") return;
+      if (error?.name === "NotAllowedError") {
+        setMessage("Press play to start the stream.");
+        return;
+      }
+      setMessage(`Could not start playback: ${error?.message || error?.name || "unknown error"}`);
+    });
+  });
+}
+
 function withViewerToken(source, viewerToken) {
   if (!source || !viewerToken) return source;
   const url = new URL(source, window.location.origin);
@@ -146,6 +161,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       if (kind === "mpegts") setMessage("This browser does not support MPEG-TS playback through Media Source Extensions, and no HLS remux URL is available.");
       cleanup = attachNativeVideo(video, streamSrc);
     }
+    startAfterAttach(video, setMessage);
 
     return () => {
       video.removeEventListener("playing", clearRecoveredError);
@@ -169,6 +185,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
         controls
         playsInline
         preload="none"
+        onPlay={() => setArmed(true)}
         onPointerDown={() => setArmed(true)}
         onTouchStart={() => setArmed(true)}
         onKeyDown={(event) => {

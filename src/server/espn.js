@@ -107,6 +107,7 @@ function compactScoreboard(header = {}) {
     linescores: competitor.linescores || [],
     statistics: competitor.statistics || [],
     records: competitor.records || [],
+    record: competitor.records?.find((record) => record.type === "total")?.summary || competitor.records?.[0]?.summary || "",
   }));
 }
 
@@ -139,10 +140,20 @@ function compactBoxscore(boxscore = {}) {
       logo: entry.team?.logo,
     },
     statistics: (entry.statistics || []).map((group) => ({
-      name: group.name || inferStatGroupName(group.labels || []),
+      name: group.displayName || group.name || inferStatGroupName(group.labels || []),
+      shortName: group.shortDisplayName || group.abbreviation || group.name || "",
       labels: group.labels || [],
-      athletes: (group.athletes || []).slice(0, 8).map((athlete) => ({
+      descriptions: group.descriptions || [],
+      keys: group.keys || [],
+      athletes: (group.athletes || []).map((athlete) => ({
+        id: athlete.athlete?.id || "",
         name: athlete.athlete?.displayName || athlete.athlete?.shortName || "",
+        shortName: athlete.athlete?.shortName || athlete.athlete?.displayName || "",
+        jersey: athlete.athlete?.jersey || "",
+        position: athlete.athlete?.position?.abbreviation || athlete.athlete?.position?.displayName || "",
+        starter: Boolean(athlete.starter),
+        didNotPlay: Boolean(athlete.didNotPlay),
+        reason: athlete.reason || "",
         stats: athlete.stats || [],
       })),
     })),
@@ -161,6 +172,8 @@ export function normalizeGameSummary(payload = {}, leagueKey = "nfl") {
   const selected = LEAGUES[leagueKey] || LEAGUES.nfl;
   const header = payload.header || {};
   const competition = header.competitions?.[0] || {};
+  const status = competition.status || header.competitions?.[0]?.status || {};
+  const statusType = status.type || {};
   const competitors = compactScoreboard(header);
   const fallbackName = competitors.length >= 2
     ? `${competitors.find((item) => item.homeAway === "away")?.team?.abbreviation || competitors[0].team?.abbreviation || ""} @ ${competitors.find((item) => item.homeAway === "home")?.team?.abbreviation || competitors[1].team?.abbreviation || ""}`.trim()
@@ -173,10 +186,20 @@ export function normalizeGameSummary(payload = {}, leagueKey = "nfl") {
     name: header.name || header.shortName || fallbackName,
     shortName: header.shortName || header.name || fallbackName,
     date: header.competitions?.[0]?.date || header.date || "",
-    status: competition.status?.type?.description || header.competitions?.[0]?.status?.type?.description || "",
-    state: competition.status?.type?.state || "",
-    period: competition.status?.period || null,
-    clock: competition.status?.displayClock || "",
+    status: statusType.description || "",
+    statusDetail: statusType.detail || statusType.statusPrimary || "",
+    shortStatusDetail: statusType.shortDetail || statusType.statusPrimary || "",
+    state: statusType.state || "",
+    completed: Boolean(statusType.completed),
+    period: status.period || null,
+    periodPrefix: status.periodPrefix || "",
+    displayPeriod: status.displayPeriod || "",
+    clock: status.displayClock || "",
+    situation: payload.situation ? {
+      balls: payload.situation.balls,
+      strikes: payload.situation.strikes,
+      outs: payload.situation.outs,
+    } : null,
     competitors,
     boxscore: compactBoxscore(payload.boxscore),
   };

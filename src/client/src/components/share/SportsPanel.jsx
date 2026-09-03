@@ -1,12 +1,20 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 
-function SportsPanel({ summary, message }) {
+function SportsPanel({ summary, message, hideScorecard = false }) {
   if (message && !summary) return <section className="sportsPanel"><p>{message}</p></section>;
-  if (summary?.sport === "baseball" || summary?.league === "mlb") return <BaseballPanel summary={summary} />;
-  return <FootballPanel summary={summary} />;
+  if (summary?.sport === "baseball" || summary?.league === "mlb") return <BaseballPanel summary={summary} hideScorecard={hideScorecard} />;
+  return <FootballPanel summary={summary} hideScorecard={hideScorecard} />;
 }
 
-function FootballPanel({ summary }) {
+function useRelativeTimeTick() {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((value) => value + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+}
+
+function FootballPanel({ summary, hideScorecard = false }) {
   const playerGroups = summary?.boxscore?.players || [];
   const competitors = [...(summary?.competitors || [])].sort((a, b) => {
     if (a.homeAway === b.homeAway) return 0;
@@ -14,18 +22,20 @@ function FootballPanel({ summary }) {
   });
   const away = competitors.find((entry) => entry.homeAway === "away") || competitors[0];
   const home = competitors.find((entry) => entry.homeAway === "home") || competitors[1];
-  const periodLabels = ["1", "2", "3", "4"];
+  const periodLabels = getPeriodLabels(summary, competitors);
 
   return (
     <section className="sportsPanel">
-      <div className="footballScorecard">
-        <ScoreTeamSide entry={away} side="away" compact />
-        <b className="footballCenterScore">{away?.score ?? "-"}</b>
-        <FootballLineScore summary={summary} away={away} home={home} periodLabels={periodLabels} />
-        <b className="footballCenterScore">{home?.score ?? "-"}</b>
-        <ScoreTeamSide entry={home} side="home" compact />
-      </div>
-      <RefreshNote seconds={summary.refreshSeconds} />
+      {!hideScorecard && (
+        <div className="footballScorecard">
+          <ScoreTeamSide entry={away} side="away" compact />
+          <b className="footballCenterScore">{away?.score ?? "-"}</b>
+          <FootballLineScore summary={summary} away={away} home={home} periodLabels={periodLabels} />
+          <b className="footballCenterScore">{home?.score ?? "-"}</b>
+          <ScoreTeamSide entry={home} side="home" compact />
+        </div>
+      )}
+      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} />
       {playerGroups.length > 0 && (
         <div className="footballBoxscore">
           {[away, home].filter(Boolean).map((entry) => {
@@ -42,7 +52,7 @@ function FootballPanel({ summary }) {
 function FootballLineScore({ summary, away, home, periodLabels }) {
   return (
     <div className="gameCenter">
-      <span>{summary.status || "Game"}</span>
+      <span>{gameStatusText(summary)}</span>
       <div className="lineScoreTable" style={{ gridTemplateColumns: `34px repeat(${periodLabels.length}, 26px)` }}>
         <div />
         {periodLabels.map((period) => <b key={period}>{period}</b>)}
@@ -60,7 +70,7 @@ function FootballLineScore({ summary, away, home, periodLabels }) {
   );
 }
 
-function BaseballPanel({ summary }) {
+function BaseballPanel({ summary, hideScorecard = false }) {
   const playerGroups = summary?.boxscore?.players || [];
   const competitors = [...(summary?.competitors || [])].sort((a, b) => {
     if (a.homeAway === b.homeAway) return 0;
@@ -69,19 +79,24 @@ function BaseballPanel({ summary }) {
   const away = competitors.find((entry) => entry.homeAway === "away") || competitors[0];
   const home = competitors.find((entry) => entry.homeAway === "home") || competitors[1];
   const teamTotals = summary?.boxscore?.teams || [];
-  const maxInnings = Math.max(9, ...competitors.map((entry) => entry.linescores?.length || 0));
+  const maxInnings = Math.max(9, ...competitors.map((entry) => entry.linescores?.length || 0), Number(summary?.period || 0));
   const inningLabels = Array.from({ length: maxInnings }, (_item, index) => String(index + 1));
 
   return (
     <section className="sportsPanel baseballPanel">
-      <div className="baseballScorecard">
-        <ScoreTeamSide entry={away} side="away" />
-        <div className="baseballGameCenter">
-          <span>{summary.status || "Game"}</span>
-          {summary.clock && <small>{summary.clock}</small>}
+      {!hideScorecard && (
+        <div className="baseballScorecard">
+          <ScoreTeamSide entry={away} side="away" />
+          <div className="baseballGameCenter">
+            <span>{gameStatusText(summary)}</span>
+            {summary.situation && !isFinalSummary(summary) && (
+              <small>{baseballSituationText(summary.situation)}</small>
+            )}
+            {summary.clock && <small>{summary.clock}</small>}
+          </div>
+          <ScoreTeamSide entry={home} side="home" />
         </div>
-        <ScoreTeamSide entry={home} side="home" />
-      </div>
+      )}
       <div className="baseballLineScore">
         <div
           className="lineScoreTable baseballLines"
@@ -105,13 +120,15 @@ function BaseballPanel({ summary }) {
           ))}
         </div>
       </div>
-      <RefreshNote seconds={summary.refreshSeconds} />
+      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} />
       {playerGroups.length > 0 && (
         <div className="baseballBoxscore">
           {[away, home].filter(Boolean).map((entry) => {
             const teamStats = playerGroups.find((team) => String(team.team?.id) === String(entry.team?.id))
               || playerGroups.find((team) => team.team?.abbreviation === entry.team?.abbreviation);
-            return <BaseballTeamBox key={entry.id || entry.team?.abbreviation} competitor={entry} teamStats={teamStats} />;
+            const totals = teamTotals.find((item) => String(item.team?.id) === String(entry.team?.id))
+              || teamTotals.find((item) => item.team?.abbreviation === entry.team?.abbreviation);
+            return <BaseballTeamBox key={entry.id || entry.team?.abbreviation} competitor={entry} teamStats={teamStats} teamTotals={totals} />;
           })}
         </div>
       )}
@@ -119,14 +136,54 @@ function BaseballPanel({ summary }) {
   );
 }
 
-function RefreshNote({ seconds }) {
-  return <small className="sportsRefreshNote">Stats refresh every {formatRefreshInterval(seconds || 60)}.</small>;
+function RefreshNote({ seconds, fetchedAt }) {
+  useRelativeTimeTick();
+  if (!seconds) {
+    return <small className="sportsRefreshNote">{fetchedAt ? `Final stats captured ${formatUpdatedAgo(fetchedAt)}.` : "Final stats snapshot."}</small>;
+  }
+  return (
+    <small className="sportsRefreshNote">
+      Stats refresh every {formatRefreshInterval(seconds)}{fetchedAt ? ` · last updated ${formatUpdatedAgo(fetchedAt)}` : ""}.
+    </small>
+  );
 }
 
 function formatRefreshInterval(seconds) {
   if (seconds < 60) return `${seconds} seconds`;
   const minutes = Math.max(1, Math.round(seconds / 60));
   return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+}
+
+function formatUpdatedAgo(value) {
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - Number(value || 0));
+  if (diff < 60) return "just now";
+  const minutes = Math.floor(diff / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} hr ago`;
+}
+
+function gameStatusText(summary) {
+  if (!summary) return "Game";
+  if (summary.statusDetail && !/^scheduled/i.test(summary.statusDetail)) return summary.statusDetail;
+  if (summary.shortStatusDetail && !/^scheduled/i.test(summary.shortStatusDetail)) return summary.shortStatusDetail;
+  if (summary.sport === "baseball" && summary.periodPrefix && summary.displayPeriod) {
+    return `${summary.periodPrefix} ${summary.displayPeriod}`;
+  }
+  return summary.status || "Game";
+}
+
+function baseballSituationText(situation) {
+  const parts = [];
+  if (Number.isFinite(Number(situation.outs))) parts.push(`${situation.outs} out${Number(situation.outs) === 1 ? "" : "s"}`);
+  if (Number.isFinite(Number(situation.balls)) && Number.isFinite(Number(situation.strikes))) {
+    parts.push(`${situation.balls}-${situation.strikes}`);
+  }
+  return parts.join(" · ");
+}
+
+function isFinalSummary(summary) {
+  return summary?.completed || summary?.state === "post" || /final/i.test(summary?.status || "");
 }
 
 function getBaseballTotal(teamTotals, entry, name) {
@@ -138,15 +195,27 @@ function getBaseballTotal(teamTotals, entry, name) {
   return statistic?.displayValue ?? statistic?.value ?? "-";
 }
 
+function getPeriodLabels(summary, competitors) {
+  const regulationPeriods = summary?.league === "ncaamb" ? 2 : 4;
+  const lineScoreCount = Math.max(...(competitors || []).map((entry) => entry.linescores?.length || 0), Number(summary?.period || 0), regulationPeriods);
+  return Array.from({ length: lineScoreCount }, (_item, index) => {
+    const period = index + 1;
+    if (summary?.league === "ncaamb" && period <= regulationPeriods) return `${period}H`;
+    if (period <= regulationPeriods) return String(period);
+    const overtime = period - regulationPeriods;
+    return overtime === 1 ? "OT" : `${overtime}OT`;
+  });
+}
+
 function ScoreTeamSide({ entry, side, compact = false }) {
   if (!entry) return <div />;
-  const record = entry.records?.find((item) => item.type === "total")?.summary || entry.records?.[0]?.summary || "";
+  const record = entry.record || entry.records?.find((item) => item.type === "total")?.summary || entry.records?.[0]?.summary || "";
   return (
     <div className={`scoreTeamSide ${side} ${compact ? "compact" : ""}`}>
       {entry.team?.logo && <img src={entry.team.logo} alt="" />}
       <div>
         <strong>{entry.team?.name || entry.team?.abbreviation}</strong>
-        {record && <span>{record} {side === "away" ? "Away" : "Home"}</span>}
+        {record && <span>{record}</span>}
       </div>
       {!compact && <b>{entry.score ?? "-"}</b>}
     </div>
@@ -155,20 +224,21 @@ function ScoreTeamSide({ entry, side, compact = false }) {
 
 function FootballTeamBox({ competitor, teamStats }) {
   const teamName = competitor.team?.name || competitor.team?.abbreviation || "Team";
+  const groups = normalizeStatGroups(teamStats?.statistics || []);
   return (
     <article className="footballTeamBox">
-      {(teamStats?.statistics || []).map((group) => (
+      {groups.map((group) => (
         <div className="statTableWrap" key={group.name}>
           <h3>
             {competitor.team?.logo && <img src={competitor.team.logo} alt="" />}
             {teamName} {group.name}
           </h3>
           <div className="statTable" style={{ gridTemplateColumns: `minmax(150px, 1.5fr) repeat(${group.labels.length}, minmax(46px, 1fr))` }}>
-            <strong />
+            <strong>{group.rowHeading}</strong>
             {group.labels.map((label) => <b key={label}>{label}</b>)}
             {group.athletes.map((athlete) => (
-              <React.Fragment key={`${group.name}-${athlete.name}`}>
-                <strong>{athlete.name}</strong>
+              <React.Fragment key={`${group.name}-${athlete.id || athlete.name}`}>
+                <AthleteName athlete={athlete} />
                 {group.labels.map((_label, index) => <span key={index}>{athlete.stats[index] ?? "-"}</span>)}
               </React.Fragment>
             ))}
@@ -179,34 +249,111 @@ function FootballTeamBox({ competitor, teamStats }) {
   );
 }
 
-function BaseballTeamBox({ competitor, teamStats }) {
+function BaseballTeamBox({ competitor, teamStats, teamTotals }) {
   const teamName = competitor.team?.name || competitor.team?.abbreviation || "Team";
-  const groups = teamStats?.statistics || [];
-  const hitting = groups.find((group) => group.name?.toLowerCase() === "batting") || groups.find((group) => group.name?.toLowerCase() === "hitting");
+  const groups = normalizeStatGroups(teamStats?.statistics || []);
+  const hitting = groups.find((group) => ["batting", "hitting"].includes(group.name?.toLowerCase()));
   const pitching = groups.find((group) => group.name?.toLowerCase() === "pitching");
   const remaining = groups.filter((group) => group !== hitting && group !== pitching);
 
   return (
     <article className="baseballTeamBox">
-      {[hitting, pitching, ...remaining].filter(Boolean).map((group) => (
-        <div className="statTableWrap" key={group.name}>
-          <h3>
-            {competitor.team?.logo && <img src={competitor.team.logo} alt="" />}
-            {teamName} {group.name === "batting" ? "Hitting" : group.name}
-          </h3>
-          <div className="statTable baseballStatTable" style={{ gridTemplateColumns: `minmax(150px, 1.5fr) repeat(${group.labels.length}, minmax(38px, 1fr))` }}>
-            <strong>{group.name === "pitching" ? "Pitchers" : "Hitters"}</strong>
-            {group.labels.map((label) => <b key={label}>{label}</b>)}
-            {group.athletes.map((athlete) => (
-              <React.Fragment key={`${group.name}-${athlete.name}`}>
-                <strong>{athlete.name}</strong>
-                {group.labels.map((_label, index) => <span key={index}>{athlete.stats[index] ?? "-"}</span>)}
-              </React.Fragment>
-            ))}
+      {[hitting, pitching, ...remaining].filter(Boolean).map((group) => {
+        const totalRow = buildTeamTotalRow(group, teamTotals);
+        const rows = totalRow ? [...group.athletes, totalRow] : group.athletes;
+        return (
+          <div className="statTableWrap" key={group.name}>
+            <h3>
+              {competitor.team?.logo && <img src={competitor.team.logo} alt="" />}
+              {teamName} {group.name === "batting" ? "Hitting" : group.name}
+            </h3>
+            <div className="statTable baseballStatTable" style={{ gridTemplateColumns: `minmax(150px, 1.5fr) repeat(${group.labels.length}, minmax(38px, 1fr))` }}>
+              <strong>{group.rowHeading}</strong>
+              {group.labels.map((label) => <b key={label}>{label}</b>)}
+              {rows.map((athlete) => (
+                <React.Fragment key={`${group.name}-${athlete.id || athlete.name}`}>
+                  <AthleteName athlete={athlete} />
+                  {group.labels.map((_label, index) => <span key={index}>{athlete.stats[index] ?? "-"}</span>)}
+                </React.Fragment>
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </article>
+  );
+}
+
+function buildTeamTotalRow(group, teamTotals) {
+  const stats = teamTotals?.statistics?.find((item) => item.name?.toLowerCase() === rawGroupName(group.name))?.stats;
+  if (!stats?.length || !group.keys?.length) return null;
+  const statMap = new Map(stats.map((stat) => [String(stat.name), stat]));
+  const values = group.keys.map((key) => displayTeamStat(statMap, key));
+  if (values.every((value) => value === "-")) return null;
+  return {
+    id: `team-${group.name}`,
+    name: "TEAM",
+    stats: values,
+  };
+}
+
+function rawGroupName(name) {
+  const lower = String(name || "").toLowerCase();
+  if (lower === "hitting") return "batting";
+  return lower;
+}
+
+function displayTeamStat(statMap, key) {
+  const normalized = String(key || "");
+  if (normalized === "hits-atBats") {
+    const hits = statMap.get("hits")?.displayValue ?? statMap.get("hits")?.value;
+    const atBats = statMap.get("atBats")?.displayValue ?? statMap.get("atBats")?.value;
+    return hits != null && atBats != null ? `${hits}-${atBats}` : "-";
+  }
+  if (normalized === "pitches-strikes") {
+    const pitches = statMap.get("pitches")?.displayValue ?? statMap.get("pitches")?.value;
+    const strikes = statMap.get("strikes")?.displayValue ?? statMap.get("strikes")?.value;
+    return pitches != null && strikes != null ? `${pitches}-${strikes}` : "-";
+  }
+  const exact = statMap.get(normalized);
+  const fallback = statMap.get(normalized.split(".").at(-1));
+  const stat = exact || fallback;
+  return stat?.displayValue ?? stat?.value ?? "-";
+}
+
+function normalizeStatGroups(groups) {
+  return groups
+    .filter((group) => group?.labels?.length || group?.athletes?.length)
+    .map((group) => ({
+      ...group,
+      name: normalizeGroupName(group.name),
+      labels: group.labels || [],
+      athletes: group.athletes || [],
+      rowHeading: rowHeadingForGroup(group.name),
+    }));
+}
+
+function normalizeGroupName(name) {
+  if (!name) return "Stats";
+  const lower = String(name).toLowerCase();
+  if (lower === "batting") return "Hitting";
+  return String(name).replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function rowHeadingForGroup(name) {
+  const lower = String(name || "").toLowerCase();
+  if (lower === "pitching") return "Pitchers";
+  if (lower === "batting" || lower === "hitting") return "Hitters";
+  return "Players";
+}
+
+function AthleteName({ athlete }) {
+  const details = [athlete.position, athlete.jersey ? `#${athlete.jersey}` : "", athlete.didNotPlay ? athlete.reason || "DNP" : ""].filter(Boolean);
+  return (
+    <strong className={athlete.didNotPlay ? "athleteName didNotPlay" : "athleteName"}>
+      <span>{athlete.name}</span>
+      {details.length > 0 && <small>{details.join(" ")}</small>}
+    </strong>
   );
 }
 

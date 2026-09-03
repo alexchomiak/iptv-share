@@ -6,6 +6,8 @@ import StaticCountdown from "../share/Countdown.jsx";
 import Player from "../share/Player.jsx";
 import ShareChat from "../share/ShareChat.jsx";
 import SportsPanel from "../share/SportsPanel.jsx";
+import { usernameColor } from "../../lib/userColors.js";
+import PastGames from "../share/PastGames.jsx";
 
 function fullUrl(url) {
   return url?.startsWith("/") ? `${window.location.origin}${url}` : url;
@@ -19,10 +21,38 @@ function viewerStatus(viewer) {
   return "Offline";
 }
 
+function ViewerControlSection({ title, viewers, defaultOpen = false, onKick, onRestore }) {
+  return (
+    <details className="adminViewerSection" defaultOpen={defaultOpen}>
+      <summary>{title} <span>{viewers.length}</span></summary>
+      <div>
+        {viewers.length === 0 && <p className="emptyState">None</p>}
+        {viewers.map((viewer) => (
+          <article key={viewer.id}>
+            <span><strong style={{ color: usernameColor(viewer.username) }}>{viewer.username}</strong> {viewerStatus(viewer)}</span>
+            {viewer.kicked
+              ? <button type="button" onClick={() => onRestore(viewer.id)}>Restore</button>
+              : <button type="button" className="danger" onClick={() => onKick(viewer.id)}>Kick</button>}
+          </article>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function AdminSharePage({ shareRef }) {
   const [share, setShare] = useState(null);
   const [message, setMessage] = useState("");
-  const [maxViewers, setMaxViewers] = useState("");
+  const [settingsForm, setSettingsForm] = useState({
+    title: "",
+    description: "",
+    icon: "",
+    backgroundImage: "",
+    discordWebhookUrl: "",
+    password: "",
+    clearPassword: false,
+    maxViewers: "",
+  });
   const [viewerToken, setViewerToken] = useState("");
   const [streamActive, setStreamActive] = useState(false);
   const [viewers, setViewers] = useState([]);
@@ -32,7 +62,14 @@ function AdminSharePage({ shareRef }) {
   const handleViewerToken = useCallback((token) => setViewerToken(token), []);
   const handlePresence = useCallback((nextViewers) => setViewers(nextViewers), []);
 
-  async function loadShare() {
+  function sportsSummaryIsFinal(summary) {
+    return Boolean(summary?.completed)
+      || String(summary?.state || "").toLowerCase() === "post"
+      || String(summary?.status || "").toLowerCase().includes("final")
+      || String(summary?.statusDetail || "").toLowerCase().includes("final");
+  }
+
+  async function loadShare({ hydrateViewers = false } = {}) {
     const response = await api(`/api/admin/share/${encodeURIComponent(shareRef)}`);
     if (!response.ok) {
       setMessage("Share not found.");
@@ -40,12 +77,22 @@ function AdminSharePage({ shareRef }) {
     }
     const payload = await response.json();
     setShare(payload.share);
-    setMaxViewers(payload.share.max_viewers || "");
-    setViewers(payload.share.viewers || []);
+    setSettingsForm({
+      title: payload.share.title || "",
+      description: payload.share.description || "",
+      icon: payload.share.icon || "",
+      backgroundImage: payload.share.background_image || "",
+      discordWebhookUrl: payload.share.discord_webhook_url || "",
+      password: "",
+      clearPassword: false,
+      maxViewers: payload.share.max_viewers || "",
+    });
+    if (hydrateViewers) setViewers(payload.share.viewers || []);
   }
 
   useEffect(() => {
-    loadShare();
+    setViewers([]);
+    loadShare({ hydrateViewers: true });
   }, [shareRef]);
 
   useEffect(() => {
@@ -58,9 +105,12 @@ function AdminSharePage({ shareRef }) {
     const current = Math.floor(Date.now() / 1000);
     const schedule = [...(share.events || share.programs || [])].sort((a, b) => eventStart(a) - eventStart(b));
     const nextEvent = schedule.find((program) => eventStart(program) > current);
-    const liveEvent = schedule.find((program) => eventStart(program) <= current && current <= eventEnd(program));
-    const reloadAt = share.stream_url
-      ? (eventEnd(liveEvent || share) + 305)
+    const activeEvent = schedule.find((program) => program.id === share.active_event_id || program.id === share.active_program_id);
+    const liveEvent = activeEvent || schedule.find((program) => eventStart(program) <= current && current <= eventEnd(program));
+    const reloadAt = share.stream_url && activeEvent?.espn
+      ? current + 60
+      : share.stream_url
+        ? (eventEnd(liveEvent || share) + 305)
       : eventStart(nextEvent || share);
     if (!Number(reloadAt) || reloadAt <= current) return undefined;
     const timer = setTimeout(loadShare, Math.max(1000, (reloadAt - current) * 1000 + 1000));
@@ -86,6 +136,7 @@ function AdminSharePage({ shareRef }) {
       if (response.ok) {
         setSportsSummary(payload.summary ? { ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt } : null);
         setSportsMessage("");
+        if (sportsSummaryIsFinal(payload.summary)) loadShare();
         timer = setTimeout(loadSportsSummary, Math.max(30, Number(payload.refreshSeconds || 60)) * 1000);
       } else {
         setSportsMessage(payload.error || "Live sports data unavailable.");
@@ -99,13 +150,13 @@ function AdminSharePage({ shareRef }) {
     };
   }, [share, shareRef, streamActive]);
 
-  async function saveMaxViewers(event) {
+  async function saveShareSettings(event) {
     event.preventDefault();
     if (!share) return;
     const endpoint = share.kind === "static" ? `/api/static-shares/${share.id}` : `/api/shares/${share.id}`;
     const body = share.kind === "static"
-      ? { title: share.title, description: share.description || "", icon: share.icon || "", password: "", clearPassword: false, maxViewers }
-      : { maxViewers };
+      ? settingsForm
+      : { maxViewers: settingsForm.maxViewers };
     const response = await api(endpoint, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -113,10 +164,10 @@ function AdminSharePage({ shareRef }) {
     });
     const payload = await response.json();
     if (!response.ok) {
-      setMessage(payload.error || "Could not save viewer limit.");
+      setMessage(payload.error || "Could not save share settings.");
       return;
     }
-    setMessage("Viewer limit saved.");
+    setMessage("Share settings saved.");
     await loadShare();
   }
 
@@ -154,16 +205,25 @@ function AdminSharePage({ shareRef }) {
   const schedule = share.events || share.programs || [];
   const sortedSchedule = [...schedule].sort((a, b) => eventStart(a) - eventStart(b));
   const nowSeconds = Math.floor(clockNow / 1000);
-  const liveEvent = sortedSchedule.find((program) => eventStart(program) <= nowSeconds && nowSeconds <= eventEnd(program));
+  const serverLiveEvent = sortedSchedule.find((program) => program.id === share.active_event_id);
+  const liveEvent = isStaticShare
+    ? serverLiveEvent
+    : sortedSchedule.find((program) => eventStart(program) <= nowSeconds && nowSeconds <= eventEnd(program));
   const nextEvent = sortedSchedule.find((program) => eventStart(program) > nowSeconds);
   const countdownSeconds = nextEvent ? Math.max(0, eventStart(nextEvent) - nowSeconds) : 0;
   const hasWindow = Number(share.starts_at) && Number(share.ends_at);
   const starts = hasWindow ? new Date(share.starts_at * 1000) : null;
   const ends = hasWindow ? new Date(share.ends_at * 1000) : null;
   const state = !hasWindow ? "Schedule" : share.server_now < share.starts_at ? "Starts" : share.server_now <= share.ends_at ? "Live now" : "Ended";
+  const onlineViewers = viewers.filter((viewer) => !viewer.kicked && viewer.online);
+  const offlineViewers = viewers.filter((viewer) => !viewer.kicked && !viewer.online);
+  const kickedViewers = viewers.filter((viewer) => viewer.kicked);
 
   return (
-    <main className={`shareShell adminWatchShell ${isStaticShare ? "staticShareShell" : ""}`}>
+    <main
+      className={`shareShell adminWatchShell ${isStaticShare ? "staticShareShell" : ""}`}
+      style={isStaticShare && share.background_image_url ? { "--static-share-bg": `url("${share.background_image_url}")` } : undefined}
+    >
       <section className={`shareHero ${isStaticShare ? "staticHero" : ""}`}>
         {isStaticShare && share.icon_url && <img className="staticShareIcon" src={share.icon_url} alt="" />}
         <div>
@@ -178,12 +238,56 @@ function AdminSharePage({ shareRef }) {
       </section>
 
       <section className="adminWatchBar">
-        <form onSubmit={saveMaxViewers}>
+        <form onSubmit={saveShareSettings}>
+          {share.kind === "static" && (
+            <>
+              <label>
+                Title
+                <input value={settingsForm.title} onChange={(event) => setSettingsForm({ ...settingsForm, title: event.target.value })} />
+              </label>
+              <label>
+                Description
+                <input value={settingsForm.description} onChange={(event) => setSettingsForm({ ...settingsForm, description: event.target.value })} />
+              </label>
+              <label>
+                Icon URL
+                <input value={settingsForm.icon} onChange={(event) => setSettingsForm({ ...settingsForm, icon: event.target.value })} placeholder="https://..." />
+              </label>
+              <label>
+                Background URL
+                <input value={settingsForm.backgroundImage} onChange={(event) => setSettingsForm({ ...settingsForm, backgroundImage: event.target.value })} placeholder="https://..." />
+              </label>
+              <label>
+                Discord webhook
+                <input value={settingsForm.discordWebhookUrl} onChange={(event) => setSettingsForm({ ...settingsForm, discordWebhookUrl: event.target.value })} type="url" placeholder="Optional Discord webhook URL" />
+              </label>
+              <label>
+                New password
+                <input
+                  value={settingsForm.password}
+                  onChange={(event) => setSettingsForm({ ...settingsForm, password: event.target.value, clearPassword: false })}
+                  type="password"
+                  placeholder={share.has_password ? "Leave blank to keep current" : "Optional"}
+                />
+              </label>
+            </>
+          )}
           <label>
             Max concurrent streamers
-            <input value={maxViewers} onChange={(event) => setMaxViewers(event.target.value)} type="number" min="0" placeholder="Unlimited" />
+            <input value={settingsForm.maxViewers} onChange={(event) => setSettingsForm({ ...settingsForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
           </label>
-          <button type="submit" className="primary">Save Limit</button>
+          {share.kind === "static" && (
+            <label className="checkboxLabel">
+              <input
+                checked={settingsForm.clearPassword}
+                onChange={(event) => setSettingsForm({ ...settingsForm, clearPassword: event.target.checked, password: "" })}
+                type="checkbox"
+                disabled={!share.has_password}
+              />
+              Remove password
+            </label>
+          )}
+          <button type="submit" className="primary">Save Settings</button>
         </form>
         <div>
           <strong>{viewers.filter((viewer) => viewer.streaming).length}</strong>
@@ -231,17 +335,9 @@ function AdminSharePage({ shareRef }) {
 
       <section className="adminViewerStrip">
         <h2>Viewer Control</h2>
-        <div>
-          {viewers.length === 0 && <p className="emptyState">No active viewers.</p>}
-          {viewers.map((viewer) => (
-            <article key={viewer.id}>
-              <span><strong>{viewer.username}</strong> {viewerStatus(viewer)}</span>
-              {viewer.kicked
-                ? <button type="button" onClick={() => unkickViewer(viewer.id)}>Restore</button>
-                : <button type="button" className="danger" onClick={() => kickViewer(viewer.id)}>Kick</button>}
-            </article>
-          ))}
-        </div>
+        <ViewerControlSection title="Online Users" viewers={onlineViewers} defaultOpen onKick={kickViewer} onRestore={unkickViewer} />
+        <ViewerControlSection title="Offline Users" viewers={offlineViewers} onKick={kickViewer} onRestore={unkickViewer} />
+        <ViewerControlSection title="Kicked Users" viewers={kickedViewers} onKick={kickViewer} onRestore={unkickViewer} />
       </section>
 
       <section className={`programList ${isStaticShare ? "adminScheduleProgramList" : ""}`}>
@@ -270,6 +366,7 @@ function AdminSharePage({ shareRef }) {
           );
         })}
       </section>
+      {isStaticShare && <PastGames games={share.pastGames || []} />}
     </main>
   );
 }

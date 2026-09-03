@@ -17,7 +17,9 @@ body {
   margin: 0;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg);
+  background:
+    radial-gradient(circle at 28% -10%, rgba(49, 196, 141, 0.12), transparent 34%),
+    #0f1217;
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -91,36 +93,53 @@ h2 {
 .appShell {
   display: grid;
   grid-template-areas:
-    "topbar"
-    "controls"
+    "guideHeader"
     "workspace"
     "peek"
     "selection";
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: 100vh;
   overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(16, 18, 22, 0.94), rgba(16, 18, 22, 1) 240px),
+    var(--bg);
 }
 
-.topbar,
-.controls,
+.guidePageHeader,
 .selectionPanel {
-  padding: 16px 20px;
+  padding: 14px 20px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  background: rgba(27, 32, 40, 0.94);
+  backdrop-filter: blur(14px);
 }
 
-.topbar {
-  grid-area: topbar;
+.guidePageHeader {
+  grid-area: guideHeader;
+  display: grid;
+  gap: 14px;
+  padding: 14px 20px 16px;
+  background:
+    linear-gradient(180deg, rgba(29, 35, 44, 0.98), rgba(23, 29, 38, 0.96)),
+    var(--panel);
+  border-bottom-color: rgba(67, 82, 101, 0.9);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.22);
+}
+
+.guideHeaderTop {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 18px;
 }
 
-.topbar p,
+.guideTitleBlock p,
 .selectionPanel p {
   color: var(--muted);
   margin-top: 4px;
+}
+
+.guideTitleBlock h1 {
+  font-size: 22px;
 }
 
 .toolbar {
@@ -130,12 +149,15 @@ h2 {
   flex-wrap: wrap;
 }
 
-.controls {
-  grid-area: controls;
+.guideCommandBar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 190px 230px 230px auto;
   align-items: end;
-  gap: 14px;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid rgba(57, 68, 82, 0.72);
+  border-radius: 8px;
+  background: rgba(15, 18, 23, 0.44);
 }
 
 .searchBox {
@@ -188,13 +210,15 @@ h2 {
 }
 
 .timeControls {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 6px;
+  justify-content: end;
 }
 
 .timeControls button {
-  padding: 0 10px;
+  min-height: 36px;
+  padding: 0 11px;
   white-space: nowrap;
 }
 
@@ -863,9 +887,10 @@ h2 {
   overflow: hidden;
   display: block;
   text-align: left;
-  border-color: #445063;
-  background: #273241;
+  border-color: rgba(68, 80, 99, 0.86);
+  background: linear-gradient(180deg, #2b3645, #25303e);
   padding: 8px 10px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 .event strong,
@@ -882,16 +907,53 @@ h2 {
 }
 
 .event.selected {
-  background: rgba(49, 196, 141, 0.28);
-  border-color: var(--accent);
+  background:
+    linear-gradient(180deg, rgba(49, 196, 141, 0.28), rgba(49, 196, 141, 0.18)),
+    #243a36;
+  border-color: #62d9af;
+  box-shadow: inset 0 0 0 1px rgba(98, 217, 175, 0.36);
 }
 
 .selectionPanel {
   grid-area: selection;
   display: grid;
-  grid-template-columns: 1fr 1.4fr auto;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding-block: 12px;
+  border-top: 1px solid rgba(57, 68, 82, 0.95);
+  border-bottom: 0;
+  box-shadow: 0 -18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.selectionPanelTop {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto;
   align-items: end;
-  gap: 16px;
+  gap: 18px;
+}
+
+.selectionSummary {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.selectionSummary > span {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.selectionSummary h2 {
+  font-size: 18px;
+}
+
+.selectionSummary p {
+  max-width: 620px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .eventPeek {
@@ -936,8 +998,36 @@ h2 {
 
 .panelFields {
   display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1.2fr) minmax(180px, 0.9fr) minmax(150px, 0.7fr);
   gap: 12px;
+}
+
+.panelFields label {
+  gap: 6px;
+}
+
+.selectionActions {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 10px;
+  justify-content: end;
+  align-items: stretch;
+}
+
+.selectionActions button {
+  min-height: 42px;
+}
+
+.selectionActions .primary {
+  min-width: 132px;
+}
+
+.selectionPanel .shareResult {
+  grid-column: 1 / -1;
+  min-height: 18px;
+  margin-top: -6px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .schedulePickerOverlay {
@@ -1169,6 +1259,46 @@ h2 {
   margin-top: 10px;
 }
 
+.viewerSection {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid rgba(57, 68, 82, 0.65);
+  padding-top: 8px;
+}
+
+.viewerSection summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: #dce4f0;
+  font-size: 13px;
+  font-weight: 800;
+  list-style: none;
+}
+
+.viewerSection summary::-webkit-details-marker {
+  display: none;
+}
+
+.viewerSection summary span {
+  min-width: 24px;
+  border-radius: 999px;
+  background: #222b38;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+.viewerSection:not([open]) {
+  gap: 0;
+}
+
+.viewerSection:not([open]) .viewerPills {
+  display: none;
+}
+
 .viewerPills > span,
 .viewerPillRow {
   border: 1px solid rgba(57, 68, 82, 0.9);
@@ -1176,6 +1306,10 @@ h2 {
   padding: 7px 9px;
   color: var(--muted);
   font-size: 13px;
+}
+
+.emptyViewerLine {
+  display: block;
 }
 
 .viewerPillRow {
@@ -1308,8 +1442,8 @@ h2 {
 
 .adminWatchBar {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) repeat(3, auto);
-  align-items: end;
+  grid-template-columns: minmax(0, 1fr) repeat(3, auto);
+  align-items: start;
   gap: 12px;
   padding: 12px 20px;
   border-top: 1px solid var(--line);
@@ -1319,9 +1453,13 @@ h2 {
 
 .adminWatchBar form {
   display: grid;
-  grid-template-columns: minmax(180px, 260px) auto;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   align-items: end;
   gap: 10px;
+}
+
+.adminWatchBar form .primary {
+  min-height: 41px;
 }
 
 .adminWatchBar > div {
@@ -1356,6 +1494,40 @@ h2 {
 }
 
 .adminViewerStrip > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+}
+
+.adminViewerSection {
+  display: grid;
+  gap: 8px;
+}
+
+.adminViewerSection summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  color: #dce4f0;
+  font-weight: 850;
+  list-style: none;
+}
+
+.adminViewerSection summary::-webkit-details-marker {
+  display: none;
+}
+
+.adminViewerSection summary span {
+  min-width: 28px;
+  border-radius: 999px;
+  background: #222b38;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.adminViewerSection > div {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 8px;
@@ -1416,9 +1588,29 @@ h2 {
 }
 
 .staticShareShell {
+  position: relative;
   background:
     linear-gradient(180deg, rgba(24, 31, 42, 0.82), rgba(15, 18, 23, 0.98) 340px),
     #0f1217;
+}
+
+.staticShareShell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(180deg, rgba(15, 18, 23, 0.55), rgba(15, 18, 23, 0.96) 58%),
+    linear-gradient(90deg, rgba(13, 119, 94, 0.18), rgba(15, 18, 23, 0.72)),
+    var(--static-share-bg, none);
+  background-size: cover;
+  background-position: center;
+  opacity: 0.42;
+}
+
+.staticShareShell > * {
+  position: relative;
+  z-index: 1;
 }
 
 .shareHero,
@@ -1841,6 +2033,7 @@ h2 {
 
 .statTableWrap {
   overflow: auto;
+  max-width: 100%;
 }
 
 .statTableWrap h3 {
@@ -1880,6 +2073,35 @@ h2 {
 .statTable strong {
   color: var(--text);
   font-weight: 850;
+}
+
+.statTable .athleteName {
+  display: grid;
+  justify-content: stretch;
+  align-content: center;
+  gap: 2px;
+  text-align: left;
+}
+
+.statTable .athleteName span {
+  display: block;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.statTable .athleteName small {
+  color: rgba(170, 179, 194, 0.72);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.1;
+}
+
+.statTable .athleteName.didNotPlay span {
+  color: rgba(229, 234, 242, 0.74);
 }
 
 .statTable b,
@@ -1981,10 +2203,179 @@ h2 {
   font-weight: 700;
 }
 
+.pastGames {
+  display: grid;
+  gap: 14px;
+  padding: 0 20px 24px;
+}
+
+.pastGamesHeader,
+.upcomingEventsHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pastGamesHeader h2,
+.upcomingEventsHeader h2 {
+  font-size: 18px;
+}
+
+.pastGamesHeader p,
+.upcomingEventsHeader p {
+  color: var(--muted);
+}
+
+.pastGameCard {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(49, 196, 141, 0.08), rgba(96, 165, 250, 0.06) 55%, transparent),
+    #121821;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.26);
+}
+
+.pastGameCard > button {
+  width: 100%;
+  height: auto;
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.archiveFallbackRow,
+.archiveScoreRow,
+.archiveSummaryRow {
+  min-width: 0;
+}
+
+.archiveFallbackRow {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.archiveFallbackRow img {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #090d13;
+}
+
+.archiveScoreRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 8px 10px 14px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.72);
+}
+
+.archiveTeam {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.archiveTeam.right {
+  grid-template-columns: auto minmax(0, 1fr) 46px;
+  text-align: right;
+}
+
+.archiveTeam.right img {
+  order: 3;
+}
+
+.archiveTeam img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+}
+
+.archiveTeam strong,
+.archiveTeam small,
+.archiveSummaryRow strong,
+.archiveSummaryRow small,
+.archiveFallbackRow strong,
+.archiveFallbackRow small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.archiveTeam small,
+.archiveSummaryRow small,
+.archiveFallbackRow small {
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.archiveTeam b {
+  color: var(--text);
+  font-size: 30px;
+  line-height: 1;
+}
+
+.archiveGameMeta {
+  min-width: 110px;
+  display: grid;
+  gap: 3px;
+  text-align: center;
+}
+
+.archiveGameMeta strong {
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.archiveGameMeta small {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.archiveSummaryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.archiveSummaryRow > b {
+  padding: 8px 10px;
+  border: 1px solid rgba(49, 196, 141, 0.4);
+  border-radius: 8px;
+  color: var(--accent);
+  font-size: 13px;
+  white-space: nowrap;
+  background: rgba(49, 196, 141, 0.08);
+}
+
+.pastGameCard .sportsPanel {
+  margin: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+}
+
 @media (max-width: 900px) {
-  .controls,
+  .guideCommandBar,
   .selectionPanel,
+  .selectionPanelTop,
   .panelFields,
+  .selectionActions,
   .adminGrid,
   .adminShareLayout,
   .adminShareRow,
@@ -1992,8 +2383,34 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .guideHeaderTop {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .timeControls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .timeControls button {
+    width: 100%;
+  }
+
   .shareRow {
     grid-template-columns: 1fr;
+  }
+
+  .selectionPanel {
+    align-items: stretch;
+  }
+
+  .selectionActions {
+    justify-content: stretch;
+  }
+
+  .selectionActions button {
+    width: 100%;
   }
 
   .shareAdmin {
@@ -2071,8 +2488,43 @@ h2 {
     margin: 0 12px 14px;
   }
 
+  .pastGames {
+    padding: 0 12px 18px;
+  }
+
+  .archiveScoreRow,
+  .archiveSummaryRow {
+    grid-template-columns: 1fr;
+  }
+
+  .archiveGameMeta {
+    min-width: 0;
+    justify-self: stretch;
+    padding: 8px 0;
+    border-top: 1px solid rgba(57, 68, 82, 0.55);
+    border-bottom: 1px solid rgba(57, 68, 82, 0.55);
+  }
+
+  .archiveTeam.right {
+    grid-template-columns: 46px minmax(0, 1fr) auto;
+    text-align: left;
+  }
+
+  .archiveTeam.right img {
+    order: 0;
+  }
+
+  .archiveSummaryRow > b {
+    justify-self: start;
+  }
+
   .footballScorecard {
     justify-items: stretch;
+    gap: 12px;
+    padding: 14px;
+  }
+
+  .baseballScorecard {
     gap: 12px;
     padding: 14px;
   }
@@ -2092,8 +2544,36 @@ h2 {
     height: 48px;
   }
 
+  .scoreTeamSide.compact,
+  .scoreTeamSide.home.compact {
+    grid-template-columns: 54px minmax(0, 1fr);
+  }
+
+  .scoreTeamSide strong {
+    font-size: 15px;
+  }
+
+  .scoreTeamSide b,
+  .footballCenterScore {
+    font-size: 26px;
+  }
+
   .gameCenter {
     order: 3;
+  }
+
+  .baseballGameCenter {
+    justify-items: start;
+    min-width: 0;
+  }
+
+  .baseballLineScore {
+    overflow-x: auto;
+    padding: 12px;
+  }
+
+  .lineScoreTable {
+    max-width: 100%;
   }
 
   .workspace {

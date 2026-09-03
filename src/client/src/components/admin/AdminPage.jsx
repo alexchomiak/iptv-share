@@ -3,7 +3,7 @@ import { api } from "../../lib/api.js";
 import { navigate } from "../../lib/navigation.js";
 import { formatDateTime } from "../../lib/time.js";
 
-const emptyStaticForm = { slug: "", title: "", description: "", icon: "", password: "", maxViewers: "" };
+const emptyStaticForm = { slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "" };
 
 function fullUrl(url) {
   return url?.startsWith("/") ? `${window.location.origin}${url}` : url;
@@ -88,6 +88,8 @@ function AdminPage() {
           <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Display title" />
           <input value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Description" />
           <input value={form.icon} onChange={(event) => setForm({ ...form, icon: event.target.value })} placeholder="Icon image URL" />
+          <input value={form.backgroundImage} onChange={(event) => setForm({ ...form, backgroundImage: event.target.value })} placeholder="Background image URL" />
+          <input value={form.discordWebhookUrl} onChange={(event) => setForm({ ...form, discordWebhookUrl: event.target.value })} placeholder="Discord webhook URL, optional" />
           <input value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} type="password" placeholder="Optional password" />
           <input value={form.maxViewers} onChange={(event) => setForm({ ...form, maxViewers: event.target.value })} type="number" min="0" placeholder="Max viewers, blank for unlimited" />
           <button type="submit" className="primary">Create Static Share</button>
@@ -107,7 +109,7 @@ function AdminPage() {
               <div className="adminShareMeta">
                 <strong>{share.title || share.slug}</strong>
                 <span>{share.kind === "static" ? `${share.event_count} scheduled` : "Temporary"} · {shareTimeSummary(share)}</span>
-                <small>{share.opened_count} opens · {share.has_password ? "Password protected" : "No password"} · {share.max_viewers || "Unlimited"} viewers</small>
+                <small>{share.opened_count} opens · {share.has_password ? "Password protected" : "No password"} · {share.max_viewers || "Unlimited"} viewers{share.has_discord_webhook ? " · Discord enabled" : ""}</small>
                 <a href={fullUrl(share.url)} target="_blank" rel="noreferrer">{fullUrl(share.url)}</a>
               </div>
               <div className="adminShareActions">

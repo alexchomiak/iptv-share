@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api.js";
 import { eventStart, formatDateTime } from "../../lib/time.js";
+import { usernameColor } from "../../lib/userColors.js";
 
 function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
-  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", password: "", maxViewers: "" });
-  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", password: "", clearPassword: false, maxViewers: "" });
+  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "" });
+  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", clearPassword: false, maxViewers: "" });
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(null);
   const [viewerShare, setViewerShare] = useState(null);
@@ -51,7 +52,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       setMessage(payload.error || "Could not create static share.");
       return;
     }
-    setStaticForm({ slug: "", title: "", description: "", icon: "", password: "", maxViewers: "" });
+    setStaticForm({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "" });
     setMessage(`Created ${payload.url}`);
     await onRefresh();
   }
@@ -66,6 +67,8 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
         title: payload.share.title || "",
         description: payload.share.description || "",
         icon: payload.share.icon || "",
+        backgroundImage: payload.share.background_image || "",
+        discordWebhookUrl: payload.share.discord_webhook_url || "",
         password: "",
         clearPassword: false,
         maxViewers: payload.share.max_viewers || "",
@@ -90,6 +93,8 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       title: payload.share.title || "",
       description: payload.share.description || "",
       icon: payload.share.icon || "",
+      backgroundImage: payload.share.background_image || "",
+      discordWebhookUrl: payload.share.discord_webhook_url || "",
       password: "",
       clearPassword: false,
       maxViewers: payload.share.max_viewers || "",
@@ -189,6 +194,8 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
             <input value={staticForm.title} onChange={(event) => setStaticForm({ ...staticForm, title: event.target.value })} placeholder="Bears Watch Schedule" />
             <input value={staticForm.description} onChange={(event) => setStaticForm({ ...staticForm, description: event.target.value })} placeholder="Optional description" />
             <input value={staticForm.icon} onChange={(event) => setStaticForm({ ...staticForm, icon: event.target.value })} placeholder="Optional icon image URL" />
+            <input value={staticForm.backgroundImage} onChange={(event) => setStaticForm({ ...staticForm, backgroundImage: event.target.value })} placeholder="Optional background image URL" />
+            <input value={staticForm.discordWebhookUrl} onChange={(event) => setStaticForm({ ...staticForm, discordWebhookUrl: event.target.value })} placeholder="Optional Discord webhook URL" />
             <input value={staticForm.password} onChange={(event) => setStaticForm({ ...staticForm, password: event.target.value })} type="password" placeholder="Optional stream password" />
             <input value={staticForm.maxViewers} onChange={(event) => setStaticForm({ ...staticForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Max stream viewers" />
             <button type="submit" className="primary">Create Static Share</button>
@@ -243,7 +250,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                 {activeViewers.map((viewer) => (
                   <article key={viewer.id}>
                     <div>
-                      <strong>{viewer.username}</strong>
+                      <strong style={{ color: usernameColor(viewer.username) }}>{viewer.username}</strong>
                       <span>{viewer.streaming ? "Streaming" : viewer.waiting ? "Waiting" : viewer.online ? "Online" : "Offline"}{viewer.kicked ? " · kicked" : ""}</span>
                     </div>
                     {viewer.kicked
@@ -256,7 +263,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                 <h3>Recent Chat</h3>
                 {recentMessages.length === 0 && <p className="emptyState">No messages yet.</p>}
                 {recentMessages.slice(-10).map((item) => (
-                  <p key={item.id}><strong>{item.username}:</strong> {item.message}</p>
+                  <p key={item.id}><strong style={{ color: usernameColor(item.username) }}>{item.username}:</strong> {item.message}</p>
                 ))}
               </div>
             </section>
@@ -286,6 +293,14 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                 <label>
                   Icon URL
                   <input value={settingsForm.icon} onChange={(event) => setSettingsForm({ ...settingsForm, icon: event.target.value })} placeholder="https://..." />
+                </label>
+                <label>
+                  Background URL
+                  <input value={settingsForm.backgroundImage} onChange={(event) => setSettingsForm({ ...settingsForm, backgroundImage: event.target.value })} placeholder="https://..." />
+                </label>
+                <label>
+                  Discord webhook
+                  <input value={settingsForm.discordWebhookUrl} onChange={(event) => setSettingsForm({ ...settingsForm, discordWebhookUrl: event.target.value })} placeholder="Optional Discord webhook URL" />
                 </label>
                 <label>
                   New password
@@ -346,7 +361,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                   {activeViewers.map((viewer) => (
                     <article key={viewer.id}>
                       <div>
-                        <strong>{viewer.username}</strong>
+                        <strong style={{ color: usernameColor(viewer.username) }}>{viewer.username}</strong>
                         <span>{viewer.streaming ? "Streaming" : viewer.waiting ? "Waiting" : "Online"}{viewer.kicked ? " · kicked" : ""}</span>
                       </div>
                       {viewer.kicked
@@ -359,7 +374,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                   <h3>Recent Chat</h3>
                   {recentMessages.length === 0 && <p className="emptyState">No messages yet.</p>}
                   {recentMessages.slice(-6).map((item) => (
-                    <p key={item.id}><strong>{item.username}:</strong> {item.message}</p>
+                    <p key={item.id}><strong style={{ color: usernameColor(item.username) }}>{item.username}:</strong> {item.message}</p>
                   ))}
                 </div>
               </section>

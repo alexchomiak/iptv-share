@@ -27,7 +27,9 @@ const viewerSockets = new Map();
 const adminSockets = new Set();
 const activeStreamResponses = new Map();
 const viewerActiveSeconds = 45;
+const offlineViewerVisibleSeconds = 3600;
 const kickedViewerVisibleSeconds = 86400;
+const sportsEventOverrunLookupSeconds = 18 * 60 * 60;
 
 app.use(express.json({ limit: "1mb" }));
 app.use((req, _res, next) => {
@@ -37,6 +39,15 @@ app.use((req, _res, next) => {
 
 function now() {
   return Math.floor(Date.now() / 1000);
+}
+
+function cleanupDelaySeconds() {
+  return Math.max(config.shareAutoDeleteSeconds, config.streamGraceSeconds);
+}
+
+function publicShareUrl(share) {
+  const base = config.publicBaseUrl.replace(/\/$/, "");
+  return base ? `${base}/s/${share.slug}` : `/s/${share.slug}`;
 }
 
 function setCookie(res, name, value, options = {}) {
@@ -73,10 +84,25 @@ function requireAuth(req, res, next) {
 }
 
 function cleanupExpiredShares() {
-  const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(config.shareAutoDeleteSeconds, now());
+  const cleanupDelay = cleanupDelaySeconds();
+  const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(cleanupDelay, now());
   for (const share of expiredShares) cleanupShareArtifacts("temporary", share.id);
-  db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(config.shareAutoDeleteSeconds, now());
-  db.prepare("DELETE FROM static_share_events WHERE ends_at + ? < ?").run(config.shareAutoDeleteSeconds, now());
+  db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(cleanupDelay, now());
+  archiveExpiredStaticEvents();
+  db.prepare(
+    `
+    DELETE FROM static_share_events
+    WHERE (
+        espn_event_id IS NULL
+        AND ends_at + ? < ?
+      )
+      OR (
+        espn_event_id IS NOT NULL
+        AND espn_final_fetched_at IS NOT NULL
+        AND espn_final_fetched_at + ? < ?
+      )
+  `,
+  ).run(cleanupDelay, now(), cleanupDelay, now());
   cleanupOrphanShareArtifacts();
 }
 
@@ -95,6 +121,41 @@ function cleanViewerToken(value) {
 
 function shareKindColumn(kind) {
   return kind === "static" ? "static" : "temporary";
+}
+
+function archiveExpiredStaticEvents() {
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO static_share_past_games(
+      static_share_id, original_event_id, title, description, icon, starts_at, ends_at,
+      espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, archived_at
+    )
+    SELECT
+      static_share_id, id, title, description, icon, starts_at, ends_at,
+      espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, ?
+    FROM static_share_events
+    WHERE espn_event_id IS NOT NULL
+      AND espn_final_summary IS NOT NULL
+  `,
+  ).run(now());
+}
+
+function archiveStaticEventSnapshot(staticEventId) {
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO static_share_past_games(
+      static_share_id, original_event_id, title, description, icon, starts_at, ends_at,
+      espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, archived_at
+    )
+    SELECT
+      static_share_id, id, title, description, icon, starts_at, ends_at,
+      espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, ?
+    FROM static_share_events
+    WHERE id = ?
+      AND espn_event_id IS NOT NULL
+      AND espn_final_summary IS NOT NULL
+  `,
+  ).run(now(), staticEventId);
 }
 
 function destroyViewerStreams(tokens) {
@@ -186,7 +247,7 @@ function loadViewers(kind, shareId) {
       ORDER BY kicked_at IS NOT NULL, wants_stream DESC, waitlist_joined_at, stream_last_seen_at DESC, last_seen_at DESC, username
     `,
     )
-    .all(shareKindColumn(kind), shareId, now() - viewerActiveSeconds, now() - kickedViewerVisibleSeconds)
+    .all(shareKindColumn(kind), shareId, now() - offlineViewerVisibleSeconds, now() - kickedViewerVisibleSeconds)
     .map(viewerPublicRow);
   const grouped = new Map();
   for (const viewer of viewers) {
@@ -444,15 +505,37 @@ function unkickViewer(kind, shareId, viewerId) {
   return result;
 }
 
-async function withShareCutoff(share, res, action) {
-  const millisecondsRemaining = Math.max(0, (share.ends_at + config.shareAutoDeleteSeconds - now()) * 1000);
-  const timer = setTimeout(() => {
-    if (!res.destroyed) res.destroy();
-  }, millisecondsRemaining);
+function streamCutoffWindow(entitlement) {
+  if (!entitlement?.usesSportsClock) return entitlement?.event || entitlement;
+  return { ...entitlement.event, open_ended_cutoff: true };
+}
+
+async function withShareCutoff(cutoff, res, action) {
+  let timer = null;
+  let checking = false;
+  if (cutoff?.open_ended_cutoff) {
+    const intervalMs = Math.max(30000, espnLiveRefreshSeconds(cutoff.espn_league || "nfl") * 1000);
+    timer = setInterval(async () => {
+      if (checking || res.destroyed) return;
+      checking = true;
+      try {
+        const entitlement = await resolveScheduledStreamEntitlement(cutoff);
+        if (!entitlement.streamable && !res.destroyed) res.destroy();
+      } finally {
+        checking = false;
+      }
+    }, intervalMs);
+  } else {
+    const millisecondsRemaining = Math.max(0, ((cutoff?.ends_at || 0) + config.streamGraceSeconds - now()) * 1000);
+    timer = setTimeout(() => {
+      if (!res.destroyed) res.destroy();
+    }, millisecondsRemaining);
+  }
   try {
     await action();
   } finally {
-    clearTimeout(timer);
+    if (cutoff?.open_ended_cutoff) clearInterval(timer);
+    else clearTimeout(timer);
   }
 }
 
@@ -491,7 +574,7 @@ function staticShareIsUnlocked(req, share) {
   return safeCompare(req.cookies[`static_share_${share.id}`], signedShareCookie(`static:${share.id}`));
 }
 
-function findActiveStaticEvent(shareId) {
+function candidateStaticEvents(shareId) {
   return db
     .prepare(
       `
@@ -500,17 +583,69 @@ function findActiveStaticEvent(shareId) {
       JOIN channels ON channels.id = static_share_events.channel_id
       WHERE static_share_events.static_share_id = ?
         AND static_share_events.starts_at - ? <= ?
-        AND ? <= static_share_events.ends_at + ?
+        AND (
+          ? <= static_share_events.ends_at + ?
+          OR (
+            static_share_events.espn_event_id IS NOT NULL
+            AND static_share_events.starts_at >= ?
+          )
+        )
       ORDER BY static_share_events.starts_at
-      LIMIT 1
     `,
     )
-    .get(shareId, config.streamGraceSeconds, now(), now(), config.shareAutoDeleteSeconds);
+    .all(shareId, config.streamGraceSeconds, now(), now(), config.streamGraceSeconds, now() - sportsEventOverrunLookupSeconds);
 }
 
-function scheduledEventIsStreamable(event) {
+function epgEventIsStreamable(event) {
   const current = now();
-  return event.starts_at - config.streamGraceSeconds <= current && current <= event.ends_at + config.shareAutoDeleteSeconds;
+  return event.starts_at - config.streamGraceSeconds <= current && current <= event.ends_at + config.streamGraceSeconds;
+}
+
+function scheduledItemHasSportsLink(item) {
+  return Boolean(item?.espn_event_id);
+}
+
+async function resolveScheduledStreamEntitlement(event) {
+  if (!scheduledItemHasSportsLink(event)) {
+    return { event, streamable: epgEventIsStreamable(event), source: "epg", usesSportsClock: false };
+  }
+  if (now() < event.starts_at - config.streamGraceSeconds) {
+    return { event, streamable: false, source: "epg-before-start", usesSportsClock: false };
+  }
+  try {
+    const result = await getEspnGameSummary({
+      league: event.espn_league || "nfl",
+      eventId: event.espn_event_id,
+    });
+    storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+    if (sportsSummaryIsFinal(result.summary)) {
+      const finalObservedAt = Number(result.fetchedAt || event.espn_final_fetched_at || now());
+      return {
+        event,
+        streamable: now() <= finalObservedAt + config.streamGraceSeconds,
+        source: "sports-final",
+        usesSportsClock: true,
+        summary: result.summary,
+      };
+    }
+    if (String(result.summary?.state || "").toLowerCase() === "in") {
+      return { event, streamable: true, source: "sports-live", usesSportsClock: true, summary: result.summary };
+    }
+    return { event, streamable: epgEventIsStreamable(event), source: "epg-sports-state", usesSportsClock: false, summary: result.summary };
+  } catch {
+    return { event, streamable: epgEventIsStreamable(event), source: "epg-sports-error", usesSportsClock: false };
+  }
+}
+
+async function scheduledEventIsStreamable(event) {
+  return (await resolveScheduledStreamEntitlement(event)).streamable;
+}
+
+async function findActiveStaticEvent(shareId) {
+  for (const event of candidateStaticEvents(shareId)) {
+    if (await scheduledEventIsStreamable(event)) return event;
+  }
+  return null;
 }
 
 function findActiveShareProgram(shareId) {
@@ -532,7 +667,7 @@ function findActiveShareProgram(shareId) {
       LIMIT 1
     `,
     )
-    .get(shareId, config.streamGraceSeconds, now(), now(), config.shareAutoDeleteSeconds);
+    .get(shareId, config.streamGraceSeconds, now(), now(), config.streamGraceSeconds);
 }
 
 app.get("/api/me", (req, res) => {
@@ -796,12 +931,14 @@ app.post("/api/shares", requireAuth, (req, res) => {
 });
 
 app.post("/api/static-shares", requireAuth, (req, res) => {
-  let { slug = "", title = "", description = "", icon = "", password = "", maxViewers = null } = req.body || {};
+  let { slug = "", title = "", description = "", icon = "", backgroundImage = "", discordWebhookUrl = "", password = "", maxViewers = null } = req.body || {};
   slug = cleanSlug(slug);
   if (!slug) slug = crypto.randomUUID();
   title = String(title).trim() || slug;
   description = String(description).trim() || null;
   icon = String(icon).trim() || null;
+  backgroundImage = String(backgroundImage).trim() || null;
+  discordWebhookUrl = String(discordWebhookUrl).trim() || null;
   password = String(password).trim();
   const passwordHash = password ? hashPassword(password) : null;
   const viewerLimit = Number(maxViewers) > 0 ? Number(maxViewers) : null;
@@ -809,10 +946,10 @@ app.post("/api/static-shares", requireAuth, (req, res) => {
     if (db.prepare("SELECT id FROM share_links WHERE slug = ?").get(slug)) throw new Error("That link name is already used");
     const result = db.prepare(
       `
-      INSERT INTO static_shares(slug, title, description, icon, password_hash, max_viewers, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO static_shares(slug, title, description, icon, background_image, discord_webhook_url, password_hash, max_viewers, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    ).run(slug, title, description, icon, passwordHash, viewerLimit, now(), now());
+    ).run(slug, title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, viewerLimit, now(), now());
     cleanupShareArtifacts("static", result.lastInsertRowid, false);
     const base = config.publicBaseUrl.replace(/\/$/, "");
     res.json({ slug, url: base ? `${base}/s/${slug}` : `/s/${slug}` });
@@ -871,6 +1008,7 @@ app.get("/api/shares", requireAuth, (_req, res) => {
         static_shares.last_opened_at,
         static_shares.max_viewers,
         static_shares.password_hash IS NOT NULL AS has_password,
+        static_shares.discord_webhook_url IS NOT NULL AND static_shares.discord_webhook_url != '' AS has_discord_webhook,
         NULL AS channel_name,
         COUNT(static_share_events.id) AS event_count,
         MIN(CASE WHEN static_share_events.ends_at >= ? THEN static_share_events.starts_at END) AS next_event_at
@@ -940,8 +1078,8 @@ function publicBaseUrl() {
   return config.publicBaseUrl.replace(/\/$/, "") || "";
 }
 
-function adminSafeStaticShare(share) {
-  const activeEvent = findActiveStaticEvent(share.id);
+async function adminSafeStaticShare(share) {
+  const activeEvent = await findActiveStaticEvent(share.id);
   const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
   const { password_hash: _passwordHash, ...payload } = share;
@@ -952,6 +1090,7 @@ function adminSafeStaticShare(share) {
     url: `${publicBaseUrl()}/s/${share.slug}`,
     admin_ref: `static-${share.id}`,
     icon_url: share.icon ? `/api/static-shares/${share.id}/icon` : null,
+    background_image_url: share.background_image ? `/api/static-shares/${share.id}/background` : null,
     active_event_id: activeEvent?.id || null,
     channel_name: activeEvent?.channel_name || "Scheduled stream",
     starts_at: activeEvent?.starts_at || null,
@@ -962,6 +1101,7 @@ function adminSafeStaticShare(share) {
     stream_kind: activeEvent ? streamKind : null,
     server_now: now(),
     events: loadStaticEvents(share.id),
+    pastGames: loadPastGames(share.id),
     viewers: loadViewers("static", share.id),
     messages: loadRecentChat("static", share.id),
   };
@@ -1006,7 +1146,7 @@ function adminSafeTemporaryShare(share) {
   };
 }
 
-function loadAdminShareByRef(ref) {
+async function loadAdminShareByRef(ref) {
   const value = String(ref || "").trim();
   const staticMatch = value.match(/^static-(\d+)$/);
   if (staticMatch) {
@@ -1042,9 +1182,9 @@ function loadRawShareByRef(ref) {
   return share ? { kind: "temporary", share } : null;
 }
 
-app.get("/api/admin/share/:ref", requireAuth, (req, res) => {
+app.get("/api/admin/share/:ref", requireAuth, async (req, res) => {
   cleanupExpiredShares();
-  const share = loadAdminShareByRef(req.params.ref);
+  const share = await loadAdminShareByRef(req.params.ref);
   if (!share) {
     res.status(404).json({ error: "not found" });
     return;
@@ -1062,7 +1202,7 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
     ? db
         .prepare("SELECT * FROM static_share_events WHERE static_share_id = ? AND id = ?")
         .get(resolved.share.id, req.query.event)
-    : findActiveStaticEvent(resolved.share.id);
+    : await findActiveStaticEvent(resolved.share.id);
   if (!linkedEvent?.espn_event_id) {
     res.status(404).json({ error: "No ESPN game linked" });
     return;
@@ -1073,6 +1213,7 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
       league: linkedEvent.espn_league || "nfl",
       eventId: linkedEvent.espn_event_id,
     });
+    storeFinalSportsSummary(linkedEvent.id, result.summary, result.fetchedAt);
     res.json({
       summary: result.summary,
       refreshSeconds,
@@ -1105,13 +1246,14 @@ app.get("/api/admin/stream/:ref", requireAuth, async (req, res) => {
           `,
           )
           .get(resolved.share.id, req.query.event)
-      : findActiveStaticEvent(resolved.share.id);
-    if (!event || !scheduledEventIsStreamable(event)) {
+      : await findActiveStaticEvent(resolved.share.id);
+    const entitlement = event ? await resolveScheduledStreamEntitlement(event) : null;
+    if (!entitlement?.streamable) {
       res.status(403).send("Scheduled event is not currently streamable");
       return;
     }
     targetUrl = event.stream_url;
-    cutoffWindow = event;
+    cutoffWindow = streamCutoffWindow(entitlement);
   } else {
     if (!shareIsStreamable(resolved.share)) {
       res.status(403).send("Share is not currently streamable");
@@ -1185,8 +1327,245 @@ function normalizeSportsLink(value = {}) {
   };
 }
 
+function sportsSummaryIsFinal(summary) {
+  return Boolean(summary?.completed)
+    || String(summary?.state || "").toLowerCase() === "post"
+    || String(summary?.status || "").toLowerCase().includes("final")
+    || String(summary?.statusDetail || "").toLowerCase().includes("final");
+}
+
+function storeFinalSportsSummary(staticEventId, summary, fetchedAt) {
+  if (!staticEventId || !summary || !sportsSummaryIsFinal(summary)) return;
+  db.prepare("UPDATE static_share_events SET espn_final_summary = ?, espn_final_fetched_at = ?, updated_at = ? WHERE id = ?").run(
+    JSON.stringify(summary),
+    Number(fetchedAt || now()),
+    now(),
+    staticEventId,
+  );
+  archiveStaticEventSnapshot(staticEventId);
+}
+
+function claimDelivery(key, shareId, eventId) {
+  return db.prepare(
+    "INSERT OR IGNORE INTO discord_webhook_deliveries(delivery_key, static_share_id, static_event_id, sent_at) VALUES (?, ?, ?, ?)",
+  ).run(key, shareId, eventId || null, now()).changes > 0;
+}
+
+function releaseDelivery(key) {
+  db.prepare("DELETE FROM discord_webhook_deliveries WHERE delivery_key = ?").run(key);
+}
+
+async function sendDiscordWebhook(webhookUrl, { content = "", embed }) {
+  if (!webhookUrl) return false;
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      username: "ShareTV",
+      content,
+      embeds: embed ? [embed] : [],
+      allowed_mentions: { parse: [] },
+    }),
+  });
+  if (!response.ok && response.status !== 204) throw new Error(`Discord webhook returned ${response.status}`);
+  return true;
+}
+
+async function sendDiscordWebhookOnce(key, shareId, eventId, webhookUrl, payload) {
+  if (!claimDelivery(key, shareId, eventId)) return false;
+  try {
+    await sendDiscordWebhook(webhookUrl, payload);
+    return true;
+  } catch (error) {
+    releaseDelivery(key);
+    throw error;
+  }
+}
+
+function discordSportsKey(event) {
+  if (event?.espn_event_id) return `static:${event.static_share_id}:espn:${event.espn_league || "unknown"}:${event.espn_event_id}`;
+  return `static:${event.static_share_id}:event:${event.id}`;
+}
+
+function teamScoreLine(summary) {
+  const competitors = [...(summary?.competitors || [])].sort((a, b) => (a.homeAway === "away" ? -1 : 1) - (b.homeAway === "away" ? -1 : 1));
+  const away = competitors.find((entry) => entry.homeAway === "away") || competitors[0];
+  const home = competitors.find((entry) => entry.homeAway === "home") || competitors[1];
+  if (!away || !home) return summary?.shortName || summary?.name || "Game update";
+  return `${away.team?.abbreviation || away.team?.name || "Away"} ${away.score ?? "-"} - ${home.score ?? "-"} ${home.team?.abbreviation || home.team?.name || "Home"}`;
+}
+
+function scoreDelta(summary) {
+  const scores = (summary?.competitors || []).map((entry) => Number(entry.score)).filter(Number.isFinite);
+  if (scores.length < 2) return null;
+  return Math.abs(scores[0] - scores[1]);
+}
+
+function isCloseLateGame(summary) {
+  const delta = scoreDelta(summary);
+  if (delta === null) return false;
+  if (summary.sport === "baseball" || summary.league === "mlb") return delta <= 2 && Number(summary.period || 0) >= 8;
+  if (summary.sport === "basketball") return delta <= 6 && Number(summary.period || 0) >= 4;
+  if (summary.sport === "football") return delta <= 8 && Number(summary.period || 0) >= 4;
+  return false;
+}
+
+function ordinal(value) {
+  const number = Number(value);
+  const suffix = number % 100 >= 11 && number % 100 <= 13 ? "th" : { 1: "st", 2: "nd", 3: "rd" }[number % 10] || "th";
+  return `${number}${suffix}`;
+}
+
+function periodLabel(summary, period) {
+  const value = Number(period || 0);
+  if (!value) return "period";
+  if (summary.sport === "baseball" || summary.league === "mlb") return `${ordinal(value)} inning`;
+  if (summary.league === "ncaamb" && value <= 2) return `${ordinal(value)} half`;
+  if (summary.league === "ncaamb") {
+    const overtime = value - 2;
+    return overtime === 1 ? "OT" : `${overtime}OT`;
+  }
+  if (value <= 4) return `${ordinal(value)} quarter`;
+  const overtime = value - 4;
+  return overtime === 1 ? "OT" : `${overtime}OT`;
+}
+
+function explicitEndedPeriod(summary) {
+  const detail = String(summary?.statusDetail || summary?.shortStatusDetail || "").trim();
+  if (!/^end\b/i.test(detail)) return null;
+  const period = Number(summary?.period || 0);
+  if (!period) return null;
+  return period;
+}
+
+function scoreKey(summary) {
+  return [...(summary?.competitors || [])]
+    .sort((a, b) => String(a.team?.id || a.team?.abbreviation).localeCompare(String(b.team?.id || b.team?.abbreviation)))
+    .map((entry) => `${entry.team?.id || entry.team?.abbreviation || entry.homeAway}:${entry.score ?? "-"}`)
+    .join("|");
+}
+
+function updateDiscordObservedState(eventId, summary) {
+  db.prepare(
+    `
+    UPDATE static_share_events
+    SET discord_last_period = ?, discord_last_state = ?, discord_last_detail = ?, discord_last_score = ?, discord_last_checked_at = ?, updated_at = ?
+    WHERE id = ?
+  `,
+  ).run(
+    Number(summary?.period || 0) || null,
+    String(summary?.state || ""),
+    String(summary?.statusDetail || summary?.shortStatusDetail || ""),
+    scoreKey(summary),
+    now(),
+    now(),
+    eventId,
+  );
+}
+
+async function runDiscordWebhookTick() {
+  const current = now();
+  const events = db
+    .prepare(
+      `
+      SELECT static_share_events.*, static_shares.slug, static_shares.title AS share_title, static_shares.discord_webhook_url
+      FROM static_share_events
+      JOIN static_shares ON static_shares.id = static_share_events.static_share_id
+      WHERE static_share_events.espn_event_id IS NOT NULL
+        AND static_shares.discord_webhook_url IS NOT NULL
+        AND static_shares.discord_webhook_url != ''
+        AND static_share_events.ends_at + ? >= ?
+        AND static_share_events.starts_at <= ?
+      ORDER BY static_share_events.starts_at
+    `,
+    )
+    .all(config.shareAutoDeleteSeconds, current, current + config.discordWebhookLeadSeconds);
+
+  for (const event of events) {
+    const shareUrl = publicShareUrl({ slug: event.slug });
+    const webhookUrl = String(event.discord_webhook_url || "").trim();
+    const sportsKey = discordSportsKey(event);
+    const reminderKey = `discord:reminder:${sportsKey}`;
+    if (event.starts_at - current <= config.discordWebhookLeadSeconds && event.starts_at > current) {
+      await sendDiscordWebhookOnce(reminderKey, event.static_share_id, event.id, webhookUrl, {
+        content: `${event.title} starts in about 15 minutes: ${shareUrl}`,
+        embed: {
+          title: event.title,
+          description: event.description || event.share_title || "Scheduled stream",
+          url: shareUrl,
+          color: 3261581,
+        },
+      });
+    }
+
+    if (event.starts_at <= current && (current <= event.ends_at + config.shareAutoDeleteSeconds || event.espn_event_id)) {
+      const league = event.espn_league || "nfl";
+      const interval = config.discordWebhookRefreshSecondsByLeague?.[league] || 180;
+      if (Number(event.discord_last_checked_at || 0) && current - Number(event.discord_last_checked_at) < interval) continue;
+      const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
+      storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+
+      const previousPeriod = Number(event.discord_last_period || 0);
+      const currentPeriod = Number(result.summary?.period || 0);
+      const finalKey = `discord:final:${sportsKey}`;
+      if (sportsSummaryIsFinal(result.summary)) {
+        await sendDiscordWebhookOnce(finalKey, event.static_share_id, event.id, webhookUrl, {
+          content: `FINAL: ${teamScoreLine(result.summary)}\n${shareUrl}`,
+        });
+      } else {
+        const endedPeriod = explicitEndedPeriod(result.summary);
+        const currentDetail = String(result.summary?.statusDetail || result.summary?.shortStatusDetail || "");
+        const completedPeriod = endedPeriod || (previousPeriod && currentPeriod > previousPeriod ? currentPeriod - 1 : null);
+        const alreadyObservedEnd = endedPeriod && currentDetail === String(event.discord_last_detail || "");
+        if (completedPeriod && !alreadyObservedEnd) {
+          const periodKey = `discord:period-end:${sportsKey}:${completedPeriod}`;
+          await sendDiscordWebhookOnce(periodKey, event.static_share_id, event.id, webhookUrl, {
+            content: `End of ${periodLabel(result.summary, completedPeriod)}: ${teamScoreLine(result.summary)}\n${shareUrl}`,
+          });
+        }
+      }
+
+      const closeKey = `discord:close:${sportsKey}`;
+      if (!sportsSummaryIsFinal(result.summary) && isCloseLateGame(result.summary)) {
+        await sendDiscordWebhookOnce(closeKey, event.static_share_id, event.id, webhookUrl, {
+          content: `Close game alert: ${teamScoreLine(result.summary)} · ${result.summary.status || "Late game"}\n${shareUrl}`,
+        });
+      }
+      updateDiscordObservedState(event.id, result.summary);
+    }
+  }
+}
+
 function loadStaticShare(idOrSlug) {
   return db.prepare("SELECT * FROM static_shares WHERE id = ? OR slug = ?").get(idOrSlug, idOrSlug);
+}
+
+function parseStoredJson(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function loadPastGames(shareId) {
+  return db
+    .prepare(
+      `
+      SELECT *
+      FROM static_share_past_games
+      WHERE static_share_id = ?
+      ORDER BY starts_at DESC
+      LIMIT 50
+    `,
+    )
+    .all(shareId)
+    .map((game) => ({
+      ...game,
+      icon_url: game.icon ? `/api/static-shares/${shareId}/past-games/${game.id}/image` : null,
+      final_summary: parseStoredJson(game.espn_final_summary),
+    }));
 }
 
 function loadStaticEvents(shareId, includePast = true) {
@@ -1205,6 +1584,7 @@ function loadStaticEvents(shareId, includePast = true) {
     .map((event) => ({
       ...event,
       icon_url: event.icon ? `/api/static-shares/${shareId}/events/${event.id}/image` : null,
+      final_summary: parseStoredJson(event.espn_final_summary),
       espn: event.espn_event_id
         ? {
             league: event.espn_league,
@@ -1221,9 +1601,19 @@ function loadStaticEvents(shareId, includePast = true) {
 }
 
 function publicStaticEvents(share) {
-  return loadStaticEvents(share.id, true).map((event) => ({
-    ...event,
-    icon_url: event.icon ? `/api/public/static-event-image/${encodeURIComponent(share.slug)}/${event.id}` : null,
+  return loadStaticEvents(share.id, true)
+    .filter((event) => !event.final_summary || now() <= Number(event.espn_final_fetched_at || 0) + config.streamGraceSeconds)
+    .map((event) => ({
+      ...event,
+      icon: undefined,
+      icon_url: event.icon ? `/api/public/static-event-image/${encodeURIComponent(share.slug)}/${event.id}` : null,
+    }));
+}
+
+function publicPastGames(share) {
+  return loadPastGames(share.id).map((game) => ({
+    ...game,
+    icon_url: game.icon ? `/api/public/static-past-game-image/${encodeURIComponent(share.slug)}/${game.id}` : null,
   }));
 }
 
@@ -1237,7 +1627,10 @@ app.get("/api/static-shares/:id", requireAuth, (req, res) => {
   const { password_hash: _passwordHash, ...payload } = share;
   payload.has_password = Boolean(share.password_hash);
   payload.url = `${config.publicBaseUrl.replace(/\/$/, "") || ""}/s/${share.slug}`;
+  payload.icon_url = share.icon ? `/api/static-shares/${share.id}/icon` : null;
+  payload.background_image_url = share.background_image ? `/api/static-shares/${share.id}/background` : null;
   payload.events = loadStaticEvents(share.id);
+  payload.pastGames = loadPastGames(share.id);
   res.json({ share: payload });
 });
 
@@ -1250,6 +1643,8 @@ app.patch("/api/static-shares/:id", requireAuth, (req, res) => {
   const title = String(req.body?.title || "").trim() || share.slug;
   const description = String(req.body?.description || "").trim() || null;
   const icon = String(req.body?.icon || "").trim() || null;
+  const backgroundImage = String(req.body?.backgroundImage || "").trim() || null;
+  const discordWebhookUrl = String(req.body?.discordWebhookUrl || "").trim() || null;
   const password = String(req.body?.password || "").trim();
   const clearPassword = Boolean(req.body?.clearPassword);
   const passwordHash = password ? hashPassword(password) : clearPassword ? null : share.password_hash;
@@ -1257,15 +1652,18 @@ app.patch("/api/static-shares/:id", requireAuth, (req, res) => {
   db.prepare(
     `
     UPDATE static_shares
-    SET title = ?, description = ?, icon = ?, password_hash = ?, max_viewers = ?, updated_at = ?
+    SET title = ?, description = ?, icon = ?, background_image = ?, discord_webhook_url = ?, password_hash = ?, max_viewers = ?, updated_at = ?
     WHERE id = ?
   `,
-  ).run(title, description, icon, passwordHash, maxViewers, now(), share.id);
+  ).run(title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, maxViewers, now(), share.id);
   const updated = loadStaticShare(share.id);
   const { password_hash: _passwordHash, ...payload } = updated;
   payload.has_password = Boolean(updated.password_hash);
   payload.url = `${config.publicBaseUrl.replace(/\/$/, "") || ""}/s/${updated.slug}`;
+  payload.icon_url = updated.icon ? `/api/static-shares/${updated.id}/icon` : null;
+  payload.background_image_url = updated.background_image ? `/api/static-shares/${updated.id}/background` : null;
   payload.events = loadStaticEvents(updated.id);
+  payload.pastGames = loadPastGames(updated.id);
   res.json({ share: payload });
 });
 
@@ -1277,6 +1675,19 @@ app.get("/api/static-shares/:id/icon", requireAuth, async (req, res) => {
   }
   try {
     await proxyImage(res, share.icon);
+  } catch {
+    res.status(502).end();
+  }
+});
+
+app.get("/api/static-shares/:id/background", requireAuth, async (req, res) => {
+  const share = loadStaticShare(req.params.id);
+  if (!share?.background_image) {
+    res.status(404).end();
+    return;
+  }
+  try {
+    await proxyImage(res, share.background_image);
   } catch {
     res.status(502).end();
   }
@@ -1401,6 +1812,21 @@ app.get("/api/static-shares/:shareId/events/:eventId/image", requireAuth, async 
   }
 });
 
+app.get("/api/static-shares/:shareId/past-games/:gameId/image", requireAuth, async (req, res) => {
+  const game = db
+    .prepare("SELECT icon FROM static_share_past_games WHERE static_share_id = ? AND id = ?")
+    .get(req.params.shareId, req.params.gameId);
+  if (!game?.icon) {
+    res.status(404).end();
+    return;
+  }
+  try {
+    await proxyImage(res, game.icon);
+  } catch {
+    res.status(502).end();
+  }
+});
+
 function loadShare(slug) {
   return db
     .prepare(
@@ -1427,21 +1853,29 @@ function loadShareById(id) {
     .get(id);
 }
 
-app.get("/api/public/share/:slug", (req, res) => {
+app.get("/api/public/share/:slug", async (req, res) => {
   cleanupExpiredShares();
   const staticShare = db.prepare("SELECT * FROM static_shares WHERE slug = ?").get(req.params.slug);
   if (staticShare) {
     const locked = !staticShareIsUnlocked(req, staticShare);
+    const activeEvent = locked ? null : await findActiveStaticEvent(staticShare.id);
     const events = publicStaticEvents(staticShare);
-    const activeEvent = locked ? null : findActiveStaticEvent(staticShare.id);
     const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
     const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
-    const { password_hash: _passwordHash, ...payload } = staticShare;
+    const {
+      password_hash: _passwordHash,
+      discord_webhook_url: _discordWebhookUrl,
+      icon: _icon,
+      background_image: _backgroundImage,
+      ...payload
+    } = staticShare;
     payload.kind = "static";
     payload.locked = locked;
     payload.events = events;
     payload.programs = events;
+    payload.pastGames = locked ? [] : publicPastGames(staticShare);
     payload.icon_url = staticShare.icon ? `/api/public/static-share-icon/${encodeURIComponent(staticShare.slug)}` : null;
+    payload.background_image_url = staticShare.background_image ? `/api/public/static-share-background/${encodeURIComponent(staticShare.slug)}` : null;
     payload.server_now = now();
     payload.active_event_id = activeEvent?.id || null;
     payload.channel_name = activeEvent?.channel_name || events.find((event) => event.ends_at >= now())?.channel_name || "Scheduled stream";
@@ -1554,6 +1988,39 @@ app.get("/api/public/static-share-icon/:slug", async (req, res) => {
   }
 });
 
+app.get("/api/public/static-share-background/:slug", async (req, res) => {
+  const share = db.prepare("SELECT background_image FROM static_shares WHERE slug = ?").get(req.params.slug);
+  if (!share?.background_image) {
+    res.status(404).end();
+    return;
+  }
+  try {
+    await proxyImage(res, share.background_image);
+  } catch {
+    res.status(502).end();
+  }
+});
+
+app.get("/api/public/static-past-game-image/:slug/:gameId", async (req, res) => {
+  const share = db.prepare("SELECT id FROM static_shares WHERE slug = ?").get(req.params.slug);
+  if (!share) {
+    res.status(404).end();
+    return;
+  }
+  const game = db
+    .prepare("SELECT icon FROM static_share_past_games WHERE static_share_id = ? AND id = ?")
+    .get(share.id, req.params.gameId);
+  if (!game?.icon) {
+    res.status(404).end();
+    return;
+  }
+  try {
+    await proxyImage(res, game.icon);
+  } catch {
+    res.status(502).end();
+  }
+});
+
 app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
   const share = db.prepare("SELECT * FROM static_shares WHERE slug = ?").get(req.params.slug);
   if (!share || !staticShareIsUnlocked(req, share)) {
@@ -1564,7 +2031,7 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
     ? db
         .prepare("SELECT * FROM static_share_events WHERE static_share_id = ? AND id = ?")
         .get(share.id, req.query.event)
-    : findActiveStaticEvent(share.id);
+    : await findActiveStaticEvent(share.id);
   if (!linkedEvent?.espn_event_id) {
     res.status(404).json({ error: "No ESPN game linked" });
     return;
@@ -1585,6 +2052,7 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
       league: linkedEvent.espn_league || "nfl",
       eventId: linkedEvent.espn_event_id,
     });
+    storeFinalSportsSummary(linkedEvent.id, result.summary, result.fetchedAt);
     res.json({
       summary: result.summary,
       refreshSeconds,
@@ -1656,8 +2124,9 @@ app.get("/api/public/stream/:slug", async (req, res) => {
           `,
           )
           .get(staticShare.id, req.query.event)
-      : findActiveStaticEvent(staticShare.id);
-    if (!event || !scheduledEventIsStreamable(event)) {
+      : await findActiveStaticEvent(staticShare.id);
+    const entitlement = event ? await resolveScheduledStreamEntitlement(event) : null;
+    if (!entitlement?.streamable) {
       res.status(403).send("Scheduled event is not currently streamable");
       return;
     }
@@ -1682,9 +2151,9 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     }
     try {
       await withViewerStream(viewerToken, res, async () => {
-        await withShareCutoff(event, res, async () => {
+        await withShareCutoff(streamCutoffWindow(entitlement), res, async () => {
           if (req.query.hls === "1") {
-            await serveHlsRemuxPlaylist(req, res, targetUrl, staticShare.slug, event);
+            await serveHlsRemuxPlaylist(req, res, targetUrl, staticShare.slug, streamCutoffWindow(entitlement));
             return;
           }
           if (req.query.format === "fmp4") {
@@ -1889,7 +2358,10 @@ function handleShareSocket(ws, req, slug) {
   ws.on("close", () => {
     clearInterval(heartbeat);
     if (ws.viewerToken) {
-      db.prepare("UPDATE share_viewers SET stream_last_seen_at = NULL, wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = NULL WHERE token = ?").run(ws.viewerToken);
+      db.prepare("UPDATE share_viewers SET last_seen_at = ?, stream_last_seen_at = NULL, wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = NULL WHERE token = ?").run(
+        now() - viewerActiveSeconds - 1,
+        ws.viewerToken,
+      );
     }
     const sockets = viewerSockets.get(key);
     if (sockets) {
@@ -1966,6 +2438,19 @@ setInterval(async () => {
     }
   }
 }, 60000);
+
+let discordWebhookTickRunning = false;
+setInterval(async () => {
+  if (discordWebhookTickRunning) return;
+  discordWebhookTickRunning = true;
+  try {
+    await runDiscordWebhookTick();
+  } catch (error) {
+    console.error(`Discord webhook tick failed: ${error.message}`);
+  } finally {
+    discordWebhookTickRunning = false;
+  }
+}, Math.max(30, config.discordWebhookTickSeconds) * 1000);
 
 const server = createServer(app);
 

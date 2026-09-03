@@ -82,6 +82,8 @@ export function initDb() {
       title TEXT NOT NULL,
       description TEXT,
       icon TEXT,
+      background_image TEXT,
+      discord_webhook_url TEXT,
       password_hash TEXT,
       max_viewers INTEGER,
       opened_count INTEGER NOT NULL DEFAULT 0,
@@ -111,6 +113,13 @@ export function initDb() {
       espn_away_name TEXT,
       espn_away_abbreviation TEXT,
       espn_away_logo TEXT,
+      discord_last_period INTEGER,
+      discord_last_state TEXT,
+      discord_last_detail TEXT,
+      discord_last_score TEXT,
+      discord_last_checked_at INTEGER,
+      espn_final_summary TEXT,
+      espn_final_fetched_at INTEGER,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       FOREIGN KEY(static_share_id) REFERENCES static_shares(id) ON DELETE CASCADE,
@@ -119,6 +128,25 @@ export function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_static_events_share_time ON static_share_events(static_share_id, starts_at);
     CREATE INDEX IF NOT EXISTS idx_static_events_time ON static_share_events(starts_at, ends_at);
+    CREATE TABLE IF NOT EXISTS static_share_past_games (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      static_share_id INTEGER NOT NULL,
+      original_event_id INTEGER,
+      title TEXT NOT NULL,
+      description TEXT,
+      icon TEXT,
+      starts_at INTEGER NOT NULL,
+      ends_at INTEGER NOT NULL,
+      espn_league TEXT,
+      espn_event_id TEXT,
+      espn_name TEXT,
+      espn_short_name TEXT,
+      espn_final_summary TEXT,
+      espn_final_fetched_at INTEGER,
+      archived_at INTEGER NOT NULL,
+      FOREIGN KEY(static_share_id) REFERENCES static_shares(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_static_past_unique ON static_share_past_games(static_share_id, original_event_id);
     CREATE TABLE IF NOT EXISTS espn_cache (
       cache_key TEXT PRIMARY KEY,
       url TEXT NOT NULL,
@@ -133,6 +161,13 @@ export function initDb() {
       requested_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_espn_request_log_time ON espn_request_log(requested_at);
+    CREATE TABLE IF NOT EXISTS discord_webhook_deliveries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      delivery_key TEXT UNIQUE NOT NULL,
+      static_share_id INTEGER NOT NULL,
+      static_event_id INTEGER,
+      sent_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS refresh_state (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       last_refresh_at INTEGER,
@@ -170,6 +205,8 @@ export function initDb() {
   ensureColumn("share_links", "last_opened_at", "INTEGER");
   ensureColumn("share_links", "max_viewers", "INTEGER");
   ensureColumn("static_shares", "icon", "TEXT");
+  ensureColumn("static_shares", "background_image", "TEXT");
+  ensureColumn("static_shares", "discord_webhook_url", "TEXT");
   ensureColumn("static_shares", "max_viewers", "INTEGER");
   ensureColumn("epg_programs", "updated_at", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_viewers", "wants_stream", "INTEGER NOT NULL DEFAULT 0");
@@ -177,6 +214,13 @@ export function initDb() {
   ensureColumn("share_viewers", "stream_granted_at", "INTEGER");
   ensureColumn("channels", "channel_number", "TEXT");
   ensureColumn("channels", "channel_sort", "INTEGER");
+  ensureColumn("static_share_events", "espn_final_summary", "TEXT");
+  ensureColumn("static_share_events", "espn_final_fetched_at", "INTEGER");
+  ensureColumn("static_share_events", "discord_last_period", "INTEGER");
+  ensureColumn("static_share_events", "discord_last_state", "TEXT");
+  ensureColumn("static_share_events", "discord_last_detail", "TEXT");
+  ensureColumn("static_share_events", "discord_last_score", "TEXT");
+  ensureColumn("static_share_events", "discord_last_checked_at", "INTEGER");
 
   const now = Math.floor(Date.now() / 1000);
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get(config.appUsername);

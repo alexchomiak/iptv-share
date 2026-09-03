@@ -86,6 +86,11 @@ function withViewerToken(source, viewerToken) {
 function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const videoRef = React.useRef(null);
   const [message, setMessage] = useState("");
+  const [armed, setArmed] = useState(false);
+
+  useEffect(() => {
+    setArmed(false);
+  }, [src, hlsSrc, kind, viewerToken]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -97,6 +102,14 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     setMessage("");
     video.removeAttribute("src");
     video.load();
+    if (!armed) {
+      return () => {
+        onPlaybackActive?.(false);
+        video.pause();
+        video.removeAttribute("src");
+        video.load();
+      };
+    }
     const nativeHlsSupported = Boolean(video.canPlayType("application/vnd.apple.mpegurl"));
     const appleTouchDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
@@ -147,11 +160,21 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive]);
+  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive, armed]);
 
   return (
     <section className="playerArea">
-      <video ref={videoRef} controls playsInline preload="auto" />
+      <video
+        ref={videoRef}
+        controls
+        playsInline
+        preload="none"
+        onPointerDown={() => setArmed(true)}
+        onTouchStart={() => setArmed(true)}
+        onKeyDown={(event) => {
+          if (event.key === " " || event.key === "Enter") setArmed(true);
+        }}
+      />
       {message && <p className="playerMessage">{message}</p>}
     </section>
   );

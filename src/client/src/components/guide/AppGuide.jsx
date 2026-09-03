@@ -235,62 +235,64 @@ function AppGuide() {
 
   return (
     <main className="appShell">
-      <header className="topbar">
-        <div>
-          <h1>IPTV Share</h1>
-          <p>{status}</p>
+      <header className="guidePageHeader">
+        <div className="guideHeaderTop">
+          <div className="guideTitleBlock">
+            <h1>IPTV Share</h1>
+            <p>{status}</p>
+          </div>
+          <div className="toolbar">
+            <button type="button" onClick={() => navigate("/admin")}>Shares</button>
+            <button type="button" onClick={refresh}>Refresh</button>
+            <button type="button" onClick={logout}>Log out</button>
+          </div>
         </div>
-        <div className="toolbar">
-          <button type="button" onClick={() => navigate("/admin")}>Shares</button>
-          <button type="button" onClick={refresh}>Refresh</button>
-          <button type="button" onClick={logout}>Log out</button>
-        </div>
-      </header>
 
-      <section className="controls">
-        <div className="searchBox">
+        <section className="guideCommandBar">
+          <div className="searchBox">
+            <label>
+              Search
+              <input value={search} onChange={(event) => setSearch(event.target.value)} type="search" placeholder="Channel or show" />
+            </label>
+            {searchResults.length > 0 && (
+              <div className="searchResults">
+                {searchResults.map((program) => (
+                  <button key={program.id} type="button" onClick={() => openSearchResult(program)}>
+                    {program.channel_logo && <img src={program.channel_logo} alt="" />}
+                    <span>
+                      <strong>{program.title}</strong>
+                      <small>{program.channel_name} · {formatDateTime.format(new Date(program.start_at * 1000))}</small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <label>
-            Search
-            <input value={search} onChange={(event) => setSearch(event.target.value)} type="search" placeholder="Channel or show" />
+            Group
+            <select value={group} onChange={(event) => setGroup(event.target.value)}>
+              <option value="">All groups</option>
+              {groups.map((item) => <option key={item}>{item}</option>)}
+            </select>
           </label>
-          {searchResults.length > 0 && (
-            <div className="searchResults">
-              {searchResults.map((program) => (
-                <button key={program.id} type="button" onClick={() => openSearchResult(program)}>
-                  {program.channel_logo && <img src={program.channel_logo} alt="" />}
-                  <span>
-                    <strong>{program.title}</strong>
-                    <small>{program.channel_name} · {formatDateTime.format(new Date(program.start_at * 1000))}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <label>
-          Group
-          <select value={group} onChange={(event) => setGroup(event.target.value)}>
-            <option value="">All groups</option>
-            {groups.map((item) => <option key={item}>{item}</option>)}
-          </select>
-        </label>
-        <label>
-          Start
-          <input value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} type="datetime-local" />
-        </label>
-        <label>
-          End
-          <input value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} type="datetime-local" />
-        </label>
-        <div className="timeControls">
-          <button type="button" onClick={() => shiftWindow(-6)}>Back 6h</button>
-          <button type="button" onClick={jumpToNow}>Now</button>
-          <button type="button" onClick={() => shiftWindow(6)}>Next 6h</button>
-          <button type="button" onClick={() => setWindowHours(12)}>Show 12h</button>
-          <button type="button" onClick={() => shiftWindow(24)}>Next 24h</button>
-          <button type="button" onClick={() => shiftWindow(48)}>Next 48h</button>
-        </div>
-      </section>
+          <label>
+            Start
+            <input value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} type="datetime-local" />
+          </label>
+          <label>
+            End
+            <input value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} type="datetime-local" />
+          </label>
+          <div className="timeControls">
+            <button type="button" onClick={() => shiftWindow(-6)}>Back 6h</button>
+            <button type="button" onClick={jumpToNow}>Now</button>
+            <button type="button" onClick={() => shiftWindow(6)}>Next 6h</button>
+            <button type="button" onClick={() => setWindowHours(12)}>Show 12h</button>
+            <button type="button" onClick={() => shiftWindow(24)}>Next 24h</button>
+            <button type="button" onClick={() => shiftWindow(48)}>Next 48h</button>
+          </div>
+        </section>
+      </header>
 
       <GuideGrid
         channels={visibleChannels}
@@ -311,13 +313,33 @@ function AppGuide() {
       {activeProgram && <EventPeek program={activeProgram} onClose={() => setActiveProgram(null)} />}
 
       <aside className="selectionPanel">
-        <div>
-          <h2>Create Share</h2>
-          <p>{selectedSummary}</p>
+        <div className="selectionPanelTop">
+          <div className="selectionSummary">
+            <span>Create Share</span>
+            <h2>{selectedPrograms.length ? `${selectedPrograms.length} event${selectedPrograms.length === 1 ? "" : "s"} selected` : selectedChannelId ? "Time window selected" : "Nothing selected"}</h2>
+            <p>{selectedSummary}</p>
+          </div>
+          <div className="selectionActions">
+            <button type="button" onClick={() => {
+              setSelectedProgramIds(new Set());
+              setSelectedChannelId(null);
+              setScheduleProgram(null);
+              setShareResult("");
+            }}>Clear</button>
+            <button type="button" disabled={!selectedProgramIds.size} onClick={async () => {
+              await loadStaticShares();
+              setEspnQuery(selectedPrograms[0]?.title || "");
+              setEspnGames([]);
+              setSelectedEspn(null);
+              setEspnCache(null);
+              setSchedulePickerOpen(true);
+            }}>Add to Schedule</button>
+            <button type="button" className="primary" onClick={createShare}>Create Link</button>
+          </div>
         </div>
         <div className="panelFields">
           <label>
-            Link name
+            Link
             <input value={shareForm.slug} onChange={(event) => setShareForm({ ...shareForm, slug: event.target.value })} placeholder="optional-name" />
           </label>
           <label>
@@ -332,23 +354,6 @@ function AppGuide() {
             Max viewers
             <input value={shareForm.maxViewers} onChange={(event) => setShareForm({ ...shareForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
           </label>
-        </div>
-        <div className="toolbar">
-          <button type="button" onClick={() => {
-            setSelectedProgramIds(new Set());
-            setSelectedChannelId(null);
-            setScheduleProgram(null);
-            setShareResult("");
-          }}>Clear</button>
-          <button type="button" disabled={!selectedProgramIds.size} onClick={async () => {
-            await loadStaticShares();
-            setEspnQuery(selectedPrograms[0]?.title || "");
-            setEspnGames([]);
-            setSelectedEspn(null);
-            setEspnCache(null);
-            setSchedulePickerOpen(true);
-          }}>Add to Schedule</button>
-          <button type="button" className="primary" onClick={createShare}>Create Link</button>
         </div>
         <p className="shareResult">{shareResult && (shareResult.startsWith("http") ? <a href={shareResult} target="_blank" rel="noreferrer">{shareResult}</a> : shareResult)}</p>
       </aside>

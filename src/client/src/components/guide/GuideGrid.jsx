@@ -43,9 +43,10 @@ function GuideGrid({ channels, programs, start, end, selectedChannelId, selected
                       type="button"
                       className={`event ${selectedProgramIds.has(program.id) ? "selected" : ""}`}
                       style={{ left: `${left}%`, width: `${width}%` }}
-                      onClick={() => onProgramToggle(program)}
-                      onMouseEnter={() => onProgramInspect(program)}
-                      onFocus={() => onProgramInspect(program)}
+                      onClick={() => {
+                        onProgramToggle(program);
+                        onProgramInspect(program);
+                      }}
                     >
                       <strong>{program.title}</strong>
                       <span>{formatTime.format(new Date(program.start_at * 1000))}</span>

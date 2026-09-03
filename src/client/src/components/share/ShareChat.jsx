@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usernameColor } from "../../lib/userColors.js";
 
 const usernameKey = "iptv-share-username";
 const tokenPrefix = "iptv-share-viewer-token:";
@@ -20,6 +21,33 @@ function formatChatTimestamp(value) {
   const timestamp = Number(value || 0);
   if (!timestamp) return "";
   return `${chatTimestampFormat.format(new Date(timestamp * 1000)).replace(",", "")} CST`;
+}
+
+function viewerLabel(viewer) {
+  if (viewer.waiting) return "waiting";
+  if (viewer.streaming) return "watching";
+  if (viewer.kicked) return "removed";
+  return viewer.online ? "online" : "offline";
+}
+
+function ViewerSection({ title, viewers, admin, defaultOpen = false, onKickViewer, onUnkickViewer }) {
+  return (
+    <details className="viewerSection" defaultOpen={defaultOpen}>
+      <summary>{title} <span>{viewers.length}</span></summary>
+      <div className="viewerPills">
+        {viewers.length === 0 && <span className="emptyViewerLine">None</span>}
+        {viewers.map((viewer) => (
+          <div key={viewer.id} className={`viewerPillRow ${viewer.streaming ? "streaming" : viewer.waiting ? "waiting" : ""}`}>
+            <span>
+              <strong style={{ color: usernameColor(viewer.username) }}>{viewer.username}</strong> · {viewerLabel(viewer)}
+            </span>
+            {admin && viewer.kicked && <button type="button" onClick={() => onUnkickViewer?.(viewer.id)}>Restore</button>}
+            {admin && !viewer.kicked && <button type="button" className="danger" onClick={() => onKickViewer?.(viewer.id)}>Kick</button>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, streamActive, admin = false, onKickViewer, onUnkickViewer }) {
@@ -104,6 +132,10 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
     setMessage("");
   }
 
+  const onlineViewers = viewers.filter((viewer) => !viewer.kicked && viewer.online);
+  const offlineViewers = viewers.filter((viewer) => !viewer.kicked && !viewer.online);
+  const kickedViewers = viewers.filter((viewer) => viewer.kicked);
+
   return (
     <section className="shareChat">
       {(!locked || admin) && !username && (
@@ -125,18 +157,9 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
           {showViewers && (
             <div className="viewerPopover">
               <strong>Viewers</strong>
-              <div className="viewerPills">
-                {viewers.length === 0 && <span>No viewers yet</span>}
-                {viewers.map((viewer) => (
-                  <div key={viewer.id} className={`viewerPillRow ${viewer.streaming ? "streaming" : viewer.waiting ? "waiting" : ""}`}>
-                    <span>
-                      {viewer.username}{viewer.waiting ? " · waiting" : viewer.streaming ? " · watching" : viewer.kicked ? " · removed" : ""}
-                    </span>
-                    {admin && viewer.kicked && <button type="button" onClick={() => onUnkickViewer?.(viewer.id)}>Restore</button>}
-                    {admin && !viewer.kicked && <button type="button" className="danger" onClick={() => onKickViewer?.(viewer.id)}>Kick</button>}
-                  </div>
-                ))}
-              </div>
+              <ViewerSection title="Online Users" viewers={onlineViewers} admin={admin} defaultOpen onKickViewer={onKickViewer} onUnkickViewer={onUnkickViewer} />
+              <ViewerSection title="Offline Users" viewers={offlineViewers} admin={admin} onKickViewer={onKickViewer} onUnkickViewer={onUnkickViewer} />
+              <ViewerSection title="Kicked Users" viewers={kickedViewers} admin={admin} onKickViewer={onKickViewer} onUnkickViewer={onUnkickViewer} />
             </div>
           )}
         </div>
@@ -145,7 +168,7 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
           {messages.map((item) => (
             <div key={item.id} className="chatMessage">
               <div className="chatMessageMeta">
-                <strong>{item.username}</strong>
+                <strong style={{ color: usernameColor(item.username) }}>{item.username}</strong>
                 <time>{formatChatTimestamp(item.created_at)}</time>
               </div>
               <span>{item.message}</span>

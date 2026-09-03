@@ -4,6 +4,7 @@ import Player from "./Player.jsx";
 import SportsPanel from "./SportsPanel.jsx";
 import StaticCountdown from "./Countdown.jsx";
 import ShareChat from "./ShareChat.jsx";
+import PastGames from "./PastGames.jsx";
 
 function SharePage({ slug }) {
   const [share, setShare] = useState(null);
@@ -21,7 +22,14 @@ function SharePage({ slug }) {
     setSlotStatus(status);
     if (status?.status === "ready") setPlayerAttempt((current) => current + 1);
   }, []);
-  const hasActiveStreamViewer = viewers.some((viewer) => viewer.streaming);
+  const hasActiveStreamViewer = streamActive || viewers.some((viewer) => viewer.streaming);
+
+  function sportsSummaryIsFinal(summary) {
+    return Boolean(summary?.completed)
+      || String(summary?.state || "").toLowerCase() === "post"
+      || String(summary?.status || "").toLowerCase().includes("final")
+      || String(summary?.statusDetail || "").toLowerCase().includes("final");
+  }
 
   async function loadShare() {
     const response = await fetch(`/api/public/share/${encodeURIComponent(slug)}`);
@@ -48,9 +56,12 @@ function SharePage({ slug }) {
     const current = Math.floor(Date.now() / 1000);
     const schedule = [...(share.events || share.programs || [])].sort((a, b) => eventStart(a) - eventStart(b));
     const nextEvent = schedule.find((program) => eventStart(program) > current);
-    const liveEvent = schedule.find((program) => eventStart(program) <= current && current <= eventEnd(program));
-    const reloadAt = share.stream_url
-      ? (eventEnd(liveEvent || share) + 305)
+    const activeEvent = schedule.find((program) => program.id === share.active_event_id || program.id === share.active_program_id);
+    const liveEvent = activeEvent || schedule.find((program) => eventStart(program) <= current && current <= eventEnd(program));
+    const reloadAt = share.stream_url && activeEvent?.espn
+      ? current + 60
+      : share.stream_url
+        ? (eventEnd(liveEvent || share) + 305)
       : eventStart(nextEvent || share);
     if (!Number(reloadAt) || reloadAt <= current) return undefined;
     const timer = setTimeout(loadShare, Math.max(1000, (reloadAt - current) * 1000 + 1000));
@@ -79,10 +90,12 @@ function SharePage({ slug }) {
       if (cancelled) return;
       if (response.ok) {
         if (payload.skipped || !payload.summary) {
+          setSportsSummary(null);
           setSportsMessage("");
         } else {
           setSportsSummary({ ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt });
           setSportsMessage("");
+          if (sportsSummaryIsFinal(payload.summary)) loadShare();
         }
         timer = setTimeout(loadSportsSummary, Math.max(30, Number(payload.refreshSeconds || 60)) * 1000);
       } else {
@@ -120,10 +133,13 @@ function SharePage({ slug }) {
   const schedule = share.events || share.programs || [];
   const sortedSchedule = [...schedule].sort((a, b) => eventStart(a) - eventStart(b));
   const nowSeconds = Math.floor(clockNow / 1000);
-  const liveEvent = sortedSchedule.find((program) => eventStart(program) <= nowSeconds && nowSeconds <= eventEnd(program));
+  const isStaticShare = share.kind === "static";
+  const serverLiveEvent = sortedSchedule.find((program) => program.id === share.active_event_id);
+  const liveEvent = isStaticShare
+    ? serverLiveEvent
+    : sortedSchedule.find((program) => eventStart(program) <= nowSeconds && nowSeconds <= eventEnd(program));
   const nextEvent = sortedSchedule.find((program) => eventStart(program) > nowSeconds);
   const countdownSeconds = nextEvent ? Math.max(0, eventStart(nextEvent) - nowSeconds) : 0;
-  const isStaticShare = share.kind === "static";
   const upcomingWindow = !isStaticShare && hasWindow && nowSeconds < share.starts_at
     ? { title: share.title || "Shared IPTV Window", start_at: share.starts_at, end_at: share.ends_at, icon_url: sortedSchedule[0]?.icon_url || sortedSchedule[0]?.icon }
     : null;
@@ -131,7 +147,10 @@ function SharePage({ slug }) {
   const oneOffCountdownSeconds = oneOffCountdownEvent ? Math.max(0, eventStart(oneOffCountdownEvent) - nowSeconds) : 0;
 
   return (
-    <main className={`shareShell ${isStaticShare ? "staticShareShell" : ""}`}>
+    <main
+      className={`shareShell ${isStaticShare ? "staticShareShell" : ""}`}
+      style={isStaticShare && share.background_image_url ? { "--static-share-bg": `url("${share.background_image_url}")` } : undefined}
+    >
       <section className={`shareHero ${isStaticShare ? "staticHero" : ""}`}>
         {isStaticShare && share.icon_url && <img className="staticShareIcon" src={share.icon_url} alt="" />}
         <div>
@@ -187,6 +206,12 @@ function SharePage({ slug }) {
       )}
       {!share.locked && !share.stream_url && !isStaticShare && !oneOffCountdownEvent && <p className="notLive">This share is not currently in its stream window.</p>}
       <section className="programList">
+        {sortedSchedule.length > 0 && (
+          <div className="upcomingEventsHeader">
+            <h2>Upcoming Events</h2>
+            <p>{sortedSchedule.length} scheduled</p>
+          </div>
+        )}
         {sortedSchedule.map((program) => {
           const media = program.icon_url || program.icon;
           const isLive = share.active_event_id === program.id || share.active_program_id === program.id;
@@ -211,6 +236,7 @@ function SharePage({ slug }) {
           );
         })}
       </section>
+      {isStaticShare && <PastGames games={share.pastGames || []} />}
     </main>
   );
 }

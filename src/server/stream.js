@@ -172,6 +172,54 @@ function waitForFile(file, timeoutMs = 10000) {
   });
 }
 
+function playlistSegments(playlist) {
+  return playlist
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map((line) => path.basename(line));
+}
+
+function waitForPlaylistSegments(session, timeoutMs = 14000) {
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (fs.existsSync(session.playlistPath)) {
+        const playlist = fs.readFileSync(session.playlistPath, "utf8");
+        const readySegments = playlistSegments(playlist).filter((segment) => fs.existsSync(path.join(session.dir, segment)));
+        if (readySegments.length >= 2) {
+          resolve(playlist);
+          return;
+        }
+      }
+      if (Date.now() - started > timeoutMs) {
+        reject(new Error(session.stderr?.trim() || "Timed out waiting for HLS segments"));
+        return;
+      }
+      setTimeout(check, 250);
+    };
+    check();
+  });
+}
+
+function waitForSegment(file, timeoutMs = 5000) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const check = () => {
+      if (fs.existsSync(file)) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() - started > timeoutMs) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 200);
+    };
+    check();
+  });
+}
+
 function probeCodecs(targetUrl) {
   return new Promise((resolve) => {
     const probe = spawn(
@@ -251,7 +299,9 @@ function stopHlsSession(session) {
 
 function scheduleHlsCleanup(session, cutoffWindow) {
   if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
-  const cutoffMs = Math.max(15000, (cutoffWindow.ends_at + config.shareAutoDeleteSeconds - Math.floor(Date.now() / 1000)) * 1000);
+  const cutoffMs = cutoffWindow?.open_ended_cutoff
+    ? Number.POSITIVE_INFINITY
+    : Math.max(15000, ((cutoffWindow?.ends_at || 0) + config.shareAutoDeleteSeconds - Math.floor(Date.now() / 1000)) * 1000);
   const idleMs = 45000;
   session.cleanupTimer = setTimeout(() => {
     if (Date.now() - session.lastAccessed > idleMs || Date.now() >= session.startedAt + cutoffMs) stopHlsSession(session);
@@ -353,8 +403,8 @@ export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWin
   const session = await getOrCreateHlsSession(targetUrl, slug, cutoffWindow);
   await waitForFile(session.playlistPath);
   session.lastAccessed = Date.now();
-  const playlist = fs.readFileSync(session.playlistPath, "utf8");
-  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  const playlist = await waitForPlaylistSegments(session);
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Accel-Buffering", "no");
   res.setHeader("X-IPTV-Share-Video-Codec", session.codecs.video || "unknown");
@@ -364,7 +414,7 @@ export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWin
   res.send(rewriteLocalHlsPlaylist(playlist, req, session));
 }
 
-export function serveHlsRemuxSegment(req, res) {
+export async function serveHlsRemuxSegment(req, res) {
   const session = hlsSessions.get(String(req.query.session || ""));
   const segment = path.basename(String(req.query.segment || ""));
   if (!session || !segment || segment.includes("..")) {
@@ -372,13 +422,14 @@ export function serveHlsRemuxSegment(req, res) {
     return;
   }
   const file = path.join(session.dir, segment);
-  if (!fs.existsSync(file)) {
+  if (!(await waitForSegment(file))) {
     res.status(404).end();
     return;
   }
   session.lastAccessed = Date.now();
-  res.setHeader("Content-Type", "video/MP2T");
+  res.setHeader("Content-Type", "video/mp2t");
   res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Accept-Ranges", "bytes");
   fs.createReadStream(file).pipe(res);
 }
 

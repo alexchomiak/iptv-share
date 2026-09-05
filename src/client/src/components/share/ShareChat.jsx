@@ -70,13 +70,19 @@ function ShareChat({
   const [message, setMessage] = useState("");
   const [status, setStatus] = useState("");
   const [showViewers, setShowViewers] = useState(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const socketRef = useRef(null);
   const messagesRef = useRef(null);
+  const reconnectTimerRef = useRef(null);
   const tokenKey = useMemo(() => `${tokenPrefix}${slug}`, [slug]);
 
   useEffect(() => {
     if ((locked && !admin) || !username) return undefined;
     let closed = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     const socket = new WebSocket(websocketUrl(slug));
     socketRef.current = socket;
 
@@ -107,15 +113,25 @@ function ShareChat({
       if (payload.type === "error") setStatus(payload.error || "Connection error.");
     });
     socket.addEventListener("close", () => {
-      if (!closed) setStatus("Chat disconnected. Refresh to reconnect.");
+      if (closed) return;
+      const delay = Math.min(10000, 1000 + reconnectAttempt * 1500);
+      setStatus(`Chat disconnected. Reconnecting in ${Math.ceil(delay / 1000)}s...`);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        setReconnectAttempt((current) => current + 1);
+      }, delay);
     });
 
     return () => {
       closed = true;
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
       socket.close();
       socketRef.current = null;
     };
-  }, [admin, locked, onPresence, onSlotStatus, onSportsUpdate, onViewerToken, slug, sportsEventId, tokenKey, username]);
+  }, [admin, locked, onPresence, onSlotStatus, onSportsUpdate, onViewerToken, reconnectAttempt, slug, sportsEventId, tokenKey, username]);
 
   useEffect(() => {
     if (!username || socketRef.current?.readyState !== WebSocket.OPEN) return;

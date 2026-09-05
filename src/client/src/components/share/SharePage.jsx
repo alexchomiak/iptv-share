@@ -46,6 +46,7 @@ function SharePage({ slug }) {
       realtime: true,
       realtimeStatus: payload.source || "fastcast",
       fetchedAt: payload.fetchedAt,
+      spoilerDelaySeconds: payload.spoilerDelaySeconds,
     });
     setSportsMessage("");
     if (sportsSummaryIsFinal(payload.summary)) loadShare();
@@ -113,7 +114,12 @@ function SharePage({ slug }) {
       if (cancelled) return;
       if (response.ok) {
         if (payload.skipped || !payload.summary) {
-          setSportsMessage("");
+          if (payload.reason === "Waiting for spoiler delay") {
+            const seconds = Number(payload.delayedWaitSeconds || payload.spoilerDelaySeconds || 0);
+            setSportsMessage(`Live stats are delayed ${payload.spoilerDelaySeconds || seconds} seconds to avoid spoilers${seconds ? ` · first snapshot in ${seconds}s` : ""}.`);
+          } else {
+            setSportsMessage("");
+          }
         } else {
           setSportsSummary({
             ...payload.summary,
@@ -121,6 +127,7 @@ function SharePage({ slug }) {
             realtime: payload.realtime,
             realtimeStatus: payload.realtimeStatus,
             fetchedAt: payload.fetchedAt,
+            spoilerDelaySeconds: payload.spoilerDelaySeconds,
           });
           setSportsMessage("");
           if (sportsSummaryIsFinal(payload.summary)) loadShare();

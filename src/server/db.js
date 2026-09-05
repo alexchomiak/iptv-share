@@ -86,6 +86,7 @@ export function initDb() {
       discord_webhook_url TEXT,
       password_hash TEXT,
       max_viewers INTEGER,
+      spoiler_delay_seconds INTEGER NOT NULL DEFAULT 0,
       opened_count INTEGER NOT NULL DEFAULT 0,
       last_opened_at INTEGER,
       created_at INTEGER NOT NULL,
@@ -155,6 +156,17 @@ export function initDb() {
       expires_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_espn_cache_expires ON espn_cache(expires_at);
+    CREATE TABLE IF NOT EXISTS espn_game_snapshots (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      league TEXT NOT NULL,
+      event_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      fetched_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_espn_snapshots_unique ON espn_game_snapshots(league, event_id, source, fetched_at);
+    CREATE INDEX IF NOT EXISTS idx_espn_snapshots_lookup ON espn_game_snapshots(league, event_id, fetched_at);
     CREATE TABLE IF NOT EXISTS espn_request_log (
       id INTEGER PRIMARY KEY,
       cache_key TEXT NOT NULL,
@@ -208,6 +220,7 @@ export function initDb() {
   ensureColumn("static_shares", "background_image", "TEXT");
   ensureColumn("static_shares", "discord_webhook_url", "TEXT");
   ensureColumn("static_shares", "max_viewers", "INTEGER");
+  ensureColumn("static_shares", "spoiler_delay_seconds", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("epg_programs", "updated_at", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_viewers", "wants_stream", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("share_viewers", "waitlist_joined_at", "INTEGER");

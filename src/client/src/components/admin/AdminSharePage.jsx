@@ -52,6 +52,7 @@ function AdminSharePage({ shareRef }) {
     password: "",
     clearPassword: false,
     maxViewers: "",
+    spoilerDelaySeconds: "",
   });
   const [viewerToken, setViewerToken] = useState("");
   const [streamActive, setStreamActive] = useState(false);
@@ -85,6 +86,7 @@ function AdminSharePage({ shareRef }) {
       realtime: true,
       realtimeStatus: payload.source || "fastcast",
       fetchedAt: payload.fetchedAt,
+      spoilerDelaySeconds: payload.spoilerDelaySeconds,
     });
     setSportsMessage("");
     if (sportsSummaryIsFinal(payload.summary)) loadShare();
@@ -107,6 +109,7 @@ function AdminSharePage({ shareRef }) {
       password: "",
       clearPassword: false,
       maxViewers: payload.share.max_viewers || "",
+      spoilerDelaySeconds: payload.share.spoiler_delay_seconds || "",
     });
     if (hydrateViewers) setViewers(payload.share.viewers || []);
   }
@@ -165,9 +168,15 @@ function AdminSharePage({ shareRef }) {
             realtime: payload.realtime,
             realtimeStatus: payload.realtimeStatus,
             fetchedAt: payload.fetchedAt,
+            spoilerDelaySeconds: payload.spoilerDelaySeconds,
           });
+          setSportsMessage("");
+        } else if (payload.reason === "Waiting for spoiler delay") {
+          const seconds = Number(payload.delayedWaitSeconds || payload.spoilerDelaySeconds || 0);
+          setSportsMessage(`Live stats are delayed ${payload.spoilerDelaySeconds || seconds} seconds to avoid spoilers${seconds ? ` · first snapshot in ${seconds}s` : ""}.`);
+        } else {
+          setSportsMessage("");
         }
-        setSportsMessage("");
         if (sportsSummaryIsFinal(payload.summary)) loadShare();
         timer = setTimeout(
           loadSportsSummary,
@@ -334,6 +343,12 @@ function AdminSharePage({ shareRef }) {
             Max concurrent streamers
             <input value={settingsForm.maxViewers} onChange={(event) => setSettingsForm({ ...settingsForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
           </label>
+          {share.kind === "static" && (
+            <label>
+              Spoiler delay
+              <input value={settingsForm.spoilerDelaySeconds} onChange={(event) => setSettingsForm({ ...settingsForm, spoilerDelaySeconds: event.target.value })} type="number" min="0" max="600" placeholder="0 seconds" />
+            </label>
+          )}
           {share.kind === "static" && (
             <label className="checkboxLabel">
               <input

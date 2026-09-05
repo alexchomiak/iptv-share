@@ -44,7 +44,7 @@ function FootballPanel({ summary, hideScorecard = false }) {
           <ScoreTeamSide entry={home} side="home" compact />
         </div>
       )}
-      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} />
+      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} spoilerDelaySeconds={summary.spoilerDelaySeconds} />
       <WinProbabilityPanel summary={summary} away={away} home={home} />
       {playerGroups.length > 0 && (
         <div className="footballBoxscore">
@@ -131,7 +131,7 @@ function BaseballPanel({ summary, hideScorecard = false }) {
           ))}
         </div>
       </div>
-      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} />
+      <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} spoilerDelaySeconds={summary.spoilerDelaySeconds} />
       {playerGroups.length > 0 && (
         <div className="baseballBoxscore">
           {[away, home].filter(Boolean).map((entry) => {
@@ -357,15 +357,24 @@ function formatPlayTimestamp(value) {
   return `${playTimestampFormat.format(new Date(timestamp)).replace(",", "")} CST`;
 }
 
-function RefreshNote({ seconds, fetchedAt }) {
+function RefreshNote({ seconds, fetchedAt, spoilerDelaySeconds = 0 }) {
   useRelativeTimeTick();
+  const hasSpoilerDelay = Number(spoilerDelaySeconds) > 0;
   if (!seconds) {
-    return <small className="sportsRefreshNote">{fetchedAt ? `Final stats captured ${formatUpdatedAgo(fetchedAt)}.` : "Final stats snapshot."}</small>;
+    return <small className="sportsRefreshNote">{fetchedAt ? "Final stats captured." : "Final stats snapshot."}</small>;
+  }
+  if (hasSpoilerDelay) {
+    const visibleAt = Number(fetchedAt || 0) + Number(spoilerDelaySeconds || 0);
+    return (
+      <small className="sportsRefreshNote">
+        Spoiler-safe stats refresh every {formatRefreshInterval(seconds)}{fetchedAt ? ` · last updated ${formatUpdatedAgo(visibleAt)}` : ""}{fetchedAt ? "." : ""}
+      </small>
+    );
   }
   const mode = fetchedAt && seconds ? "Stats update" : "Stats refresh";
   return (
     <small className="sportsRefreshNote">
-      {mode} every {formatRefreshInterval(seconds)}{fetchedAt ? ` · last updated ${formatUpdatedAgo(fetchedAt)}` : ""}{fetchedAt ? "." : ""}
+      {mode} every {formatRefreshInterval(seconds)}{delayText}{fetchedAt ? ` · last updated ${formatUpdatedAgo(fetchedAt)}` : ""}{fetchedAt ? "." : ""}
     </small>
   );
 }
@@ -452,7 +461,9 @@ function baseballLineScoreValue(entry, index, summary) {
   const period = Number(summary?.period || 0);
   const inning = index + 1;
   const periodText = baseballLivePeriodText(summary);
-  if (!period || inning !== period || !/^top|^bottom/i.test(periodText)) return "-";
+  if (!period || inning > period) return "-";
+  if (inning < period) return "0";
+  if (/^(middle|mid|end)/i.test(periodText)) return "0";
   if (/^top/i.test(periodText) && entry.homeAway === "away") return "0";
   if (/^bottom/i.test(periodText)) return "0";
   return "-";

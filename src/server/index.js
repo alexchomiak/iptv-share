@@ -36,6 +36,8 @@ const viewerSockets = new Map();
 const adminSockets = new Set();
 const activeStreamResponses = new Map();
 const lastPresenceSignatures = new Map();
+const delayedSportsTimers = new Map();
+const lastSportsPayloadSignatures = new Map();
 const viewerActiveSeconds = 45;
 const offlineViewerVisibleSeconds = 3600;
 const kickedViewerVisibleSeconds = 86400;
@@ -53,6 +55,12 @@ function now() {
 
 function cleanupDelaySeconds() {
   return Math.max(config.shareAutoDeleteSeconds, config.streamGraceSeconds);
+}
+
+function cleanDelaySeconds(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(600, Math.floor(parsed));
 }
 
 function publicShareUrl(share) {
@@ -205,6 +213,9 @@ function destroyViewerStreams(tokens) {
 
 function cleanupShareArtifacts(kind, shareId, destroyStreams = true) {
   const shareKind = shareKindColumn(kind);
+  const linkedSportsEvents = shareKind === "static"
+    ? db.prepare("SELECT espn_league, espn_event_id FROM static_share_events WHERE static_share_id = ? AND espn_event_id IS NOT NULL").all(shareId)
+    : [];
   const tokens = db
     .prepare("SELECT token FROM share_viewers WHERE share_kind = ? AND share_id = ?")
     .all(shareKind, shareId)
@@ -217,7 +228,38 @@ function cleanupShareArtifacts(kind, shareId, destroyStreams = true) {
     db.prepare("DELETE FROM static_share_past_games WHERE static_share_id = ?").run(shareId);
     db.prepare("DELETE FROM static_share_events WHERE static_share_id = ?").run(shareId);
   }
+  cleanupDelayedSportsUpdates(shareKind, shareId, linkedSportsEvents);
   broadcastShareState(kind, shareId);
+}
+
+function cleanupDelayedSportsUpdates(shareKind, shareId, linkedSportsEvents = []) {
+  const prefix = `${shareKind}:${shareId}:`;
+  for (const key of delayedSportsTimers.keys()) {
+    if (!key.startsWith(prefix)) continue;
+    const timer = delayedSportsTimers.get(key);
+    if (timer) clearTimeout(timer);
+    delayedSportsTimers.delete(key);
+    lastSportsPayloadSignatures.delete(key);
+  }
+  for (const event of linkedSportsEvents) {
+    if (!event.espn_event_id) continue;
+    const league = normalizeEspnSnapshotLeague(event.espn_league || "mlb");
+    const remaining = db
+      .prepare("SELECT espn_league FROM static_share_events WHERE espn_event_id = ?")
+      .all(String(event.espn_event_id))
+      .some((row) => normalizeEspnSnapshotLeague(row.espn_league || "mlb") === league);
+    if (!remaining) {
+      db.prepare("DELETE FROM espn_game_snapshots WHERE event_id = ? AND league = ?").run(String(event.espn_event_id), league);
+    }
+  }
+}
+
+function cleanupDelayedSportsEvent(kind, shareId, eventId) {
+  const key = sportsDelayKey(kind, shareId, eventId);
+  const timer = delayedSportsTimers.get(key);
+  if (timer) clearTimeout(timer);
+  delayedSportsTimers.delete(key);
+  lastSportsPayloadSignatures.delete(key);
 }
 
 function cleanupTemporaryShareArtifacts(shareId, destroyStreams = true) {
@@ -560,9 +602,20 @@ function broadcastChatHistory(kind, shareId) {
 
 function broadcastSportsUpdate(kind, shareId, eventId, result) {
   const payload = sportsUpdatePayload(kind, shareId, eventId, result);
-  for (const ws of viewerSockets.get(shareSocketKey(kind, shareId)) || []) sendJson(ws, payload);
+  const delayedPayload = delayedSportsPayload(kind, shareId, eventId, payload);
+  if (!delayedPayload) return;
+  sendSportsPayload(kind, shareId, delayedPayload);
+}
+
+function sendSportsPayload(kind, shareId, payload) {
+  const key = shareSocketKey(kind, shareId);
+  const signatureKey = sportsDelayKey(kind, shareId, payload.eventId);
+  const signature = `${payload.fetchedAt || 0}:${payload.source || ""}:${crypto.createHash("sha1").update(JSON.stringify(payload.summary || {})).digest("hex").slice(0, 12)}`;
+  if (lastSportsPayloadSignatures.get(signatureKey) === signature) return;
+  lastSportsPayloadSignatures.set(signatureKey, signature);
+  for (const ws of viewerSockets.get(key) || []) sendJson(ws, payload);
   for (const ws of adminSockets) {
-    if (!ws.shareFilter || ws.shareFilter === shareSocketKey(kind, shareId)) sendJson(ws, payload);
+    if (!ws.shareFilter || ws.shareFilter === key) sendJson(ws, payload);
   }
 }
 
@@ -577,6 +630,198 @@ function sportsUpdatePayload(kind, shareId, eventId, result) {
     fetchedAt: result.fetchedAt,
     source: result.source || result.summary?.source || "espn",
   };
+}
+
+function sportsDelayKey(kind, shareId, eventId) {
+  return `${shareKindColumn(kind)}:${shareId}:${eventId}`;
+}
+
+function sportsSpoilerDelaySeconds(kind, shareId) {
+  if (shareKindColumn(kind) !== "static") return 0;
+  const row = db.prepare("SELECT spoiler_delay_seconds FROM static_shares WHERE id = ?").get(shareId);
+  return cleanDelaySeconds(row?.spoiler_delay_seconds);
+}
+
+function sportsPayloadTimestamp(payload) {
+  return Number(payload?.fetchedAt || payload?.summary?.fetchedAt || now());
+}
+
+function delayedSportsPayload(kind, shareId, eventId, payload) {
+  const delaySeconds = sportsSpoilerDelaySeconds(kind, shareId);
+  storeEspnGameSnapshot(payload);
+  const currentPayload = withSpoilerDelay(payload, delaySeconds);
+  if (!delaySeconds) return currentPayload;
+  scheduleDelayedSportsFlush(kind, shareId, eventId);
+  return latestAvailableSportsPayload(kind, shareId, eventId, delaySeconds);
+}
+
+function withSpoilerDelay(payload, delaySeconds) {
+  return {
+    ...payload,
+    spoilerDelaySeconds: delaySeconds,
+    summary: payload.summary ? { ...payload.summary, spoilerDelaySeconds: delaySeconds } : payload.summary,
+  };
+}
+
+function espnSnapshotIdentity(payload) {
+  const summary = payload?.summary || {};
+  const league = normalizeEspnSnapshotLeague(summary.league || summary.sport || "mlb");
+  const eventId = String(summary.id || summary.eventId || "").trim();
+  if (!eventId) return null;
+  return { league, eventId };
+}
+
+function normalizeEspnSnapshotLeague(value) {
+  const league = String(value || "mlb").toLowerCase();
+  if (league === "baseball") return "mlb";
+  if (league === "basketball") return "nba";
+  return league;
+}
+
+function storeEspnGameSnapshot(payload) {
+  const identity = espnSnapshotIdentity(payload);
+  if (!identity || !payload?.summary) return false;
+  const fetchedAt = sportsPayloadTimestamp(payload);
+  payload.summary = mergeWithPreviousSportsSummary(identity, payload.summary);
+  db.prepare(
+    `
+    INSERT INTO espn_game_snapshots(league, event_id, source, payload, fetched_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(league, event_id, source, fetched_at)
+    DO UPDATE SET payload = excluded.payload, created_at = excluded.created_at
+  `,
+  ).run(identity.league, identity.eventId, payload.source || "espn", JSON.stringify(payload.summary), fetchedAt, now());
+  db.prepare("DELETE FROM espn_game_snapshots WHERE created_at < ?").run(now() - 86400);
+  return true;
+}
+
+function mergeWithPreviousSportsSummary(identity, summary) {
+  const previous = db
+    .prepare(
+      `
+      SELECT payload
+      FROM espn_game_snapshots
+      WHERE league = ? AND event_id = ?
+      ORDER BY fetched_at DESC, id DESC
+      LIMIT 1
+    `,
+    )
+    .get(identity.league, identity.eventId);
+  if (!previous?.payload) return summary;
+  try {
+    return mergeSportsSummary(JSON.parse(previous.payload), summary);
+  } catch {
+    return summary;
+  }
+}
+
+function mergeSportsSummary(previous, current) {
+  if (!previous || !current) return current;
+  const previousCompetitors = previous.competitors || [];
+  const competitors = (current.competitors || []).map((competitor) => {
+    const prior = previousCompetitors.find((entry) => String(entry.id || entry.team?.id || entry.team?.abbreviation) === String(competitor.id || competitor.team?.id || competitor.team?.abbreviation))
+      || previousCompetitors.find((entry) => entry.team?.abbreviation && entry.team.abbreviation === competitor.team?.abbreviation);
+    return {
+      ...competitor,
+      linescores: mergeLinescores(prior?.linescores || [], competitor.linescores || []),
+    };
+  });
+  return { ...current, competitors };
+}
+
+function lineScoreHasValue(line) {
+  const value = line?.value ?? line?.displayValue;
+  return value !== undefined && value !== null && value !== "";
+}
+
+function mergeLinescores(previous = [], current = []) {
+  const maxLength = Math.max(previous.length, current.length);
+  return Array.from({ length: maxLength }, (_item, index) => {
+    const next = current[index];
+    if (lineScoreHasValue(next)) return next;
+    return previous[index] || next;
+  }).filter(Boolean);
+}
+
+function newestEspnSnapshot(event) {
+  if (!event?.espn_event_id) return null;
+  return db
+    .prepare(
+      `
+      SELECT fetched_at, source
+      FROM espn_game_snapshots
+      WHERE league = ? AND event_id = ?
+      ORDER BY fetched_at DESC, id DESC
+      LIMIT 1
+    `,
+    )
+    .get(normalizeEspnSnapshotLeague(event.espn_league || "mlb"), String(event.espn_event_id));
+}
+
+function latestAvailableSportsPayload(kind, shareId, eventId, delaySeconds = sportsSpoilerDelaySeconds(kind, shareId)) {
+  if (shareKindColumn(kind) !== "static") return null;
+  const event = db
+    .prepare("SELECT espn_league, espn_event_id FROM static_share_events WHERE static_share_id = ? AND id = ?")
+    .get(shareId, eventId);
+  if (!event?.espn_event_id) return null;
+  const row = db
+    .prepare(
+      `
+      SELECT *
+      FROM espn_game_snapshots
+      WHERE league = ? AND event_id = ? AND fetched_at <= ?
+      ORDER BY fetched_at DESC, id DESC
+      LIMIT 1
+    `,
+    )
+    .get(normalizeEspnSnapshotLeague(event.espn_league || "mlb"), String(event.espn_event_id), now() - delaySeconds);
+  if (!row) return null;
+  try {
+    const summary = JSON.parse(row.payload);
+    return withSpoilerDelay(sportsUpdatePayload(kind, shareId, eventId, {
+      summary,
+      fetchedAt: row.fetched_at,
+      source: row.source,
+    }), delaySeconds);
+  } catch {
+    return null;
+  }
+}
+
+function nextDelayedSportsAvailableIn(kind, shareId, eventId) {
+  if (shareKindColumn(kind) !== "static") return null;
+  const delaySeconds = sportsSpoilerDelaySeconds(kind, shareId);
+  if (!delaySeconds) return null;
+  const event = db
+    .prepare("SELECT espn_league, espn_event_id FROM static_share_events WHERE static_share_id = ? AND id = ?")
+    .get(shareId, eventId);
+  if (!event?.espn_event_id) return null;
+  const nextEntry = db
+    .prepare(
+      `
+      SELECT fetched_at
+      FROM espn_game_snapshots
+      WHERE league = ? AND event_id = ? AND fetched_at > ?
+      ORDER BY fetched_at ASC
+      LIMIT 1
+    `,
+    )
+    .get(normalizeEspnSnapshotLeague(event.espn_league || "mlb"), String(event.espn_event_id), now() - delaySeconds);
+  return nextEntry ? Math.max(1, nextEntry.fetched_at + delaySeconds - now()) : null;
+}
+
+function scheduleDelayedSportsFlush(kind, shareId, eventId) {
+  const key = sportsDelayKey(kind, shareId, eventId);
+  if (delayedSportsTimers.has(key)) return;
+  const waitSeconds = nextDelayedSportsAvailableIn(kind, shareId, eventId);
+  if (!waitSeconds) return;
+  const timer = setTimeout(() => {
+    delayedSportsTimers.delete(key);
+    const payload = latestAvailableSportsPayload(kind, shareId, eventId);
+    if (payload) sendSportsPayload(kind, shareId, payload);
+    scheduleDelayedSportsFlush(kind, shareId, eventId);
+  }, Math.max(1000, waitSeconds * 1000));
+  delayedSportsTimers.set(key, timer);
 }
 
 function ensureStaticSportsLiveFeed(event, reason = "viewer") {
@@ -594,6 +839,55 @@ function ensureStaticSportsLiveFeed(event, reason = "viewer") {
   });
 }
 
+let sportsTrackerTickRunning = false;
+
+function loadTrackableStaticSportsEvents() {
+  const current = now();
+  return db
+    .prepare(
+      `
+      SELECT static_share_events.*, static_shares.discord_webhook_url
+      FROM static_share_events
+      JOIN static_shares ON static_shares.id = static_share_events.static_share_id
+      WHERE static_share_events.espn_event_id IS NOT NULL
+        AND static_share_events.espn_final_summary IS NULL
+        AND static_share_events.starts_at - ? <= ?
+        AND static_share_events.starts_at >= ?
+      ORDER BY static_share_events.starts_at
+      LIMIT 50
+    `,
+    )
+    .all(config.streamGraceSeconds, current, current - sportsEventOverrunLookupSeconds);
+}
+
+async function runSportsTrackerTick() {
+  if (sportsTrackerTickRunning) return;
+  sportsTrackerTickRunning = true;
+  try {
+    for (const event of loadTrackableStaticSportsEvents()) {
+      ensureStaticSportsLiveFeed(event, "tracker");
+      const league = normalizeEspnSnapshotLeague(event.espn_league || "mlb");
+      const fallbackSeconds = espnSummaryRefreshSeconds(league);
+      const latest = newestEspnSnapshot(event);
+      if (latest && now() - Number(latest.fetched_at || 0) < fallbackSeconds) continue;
+      try {
+        const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
+        storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+        const payload = delayedSportsPayload("static", event.static_share_id, event.id, sportsUpdatePayload("static", event.static_share_id, event.id, {
+          summary: result.summary,
+          fetchedAt: result.fetchedAt,
+          source: result.source || "summary",
+        }));
+        if (payload) sendSportsPayload("static", event.static_share_id, payload);
+      } catch (error) {
+        console.error(`Sports tracker failed for ${league}:${event.espn_event_id}: ${error.message}`);
+      }
+    }
+  } finally {
+    sportsTrackerTickRunning = false;
+  }
+}
+
 function ensureSportsPushForSocket(ws, eventId, reason = "viewer", options = {}) {
   if (ws.shareKind !== "static" || !eventId) return;
   const event = db
@@ -602,11 +896,12 @@ function ensureSportsPushForSocket(ws, eventId, reason = "viewer", options = {})
   if (!event?.espn_event_id) return;
   const feed = ensureStaticSportsLiveFeed(event, reason);
   if (options.sendSnapshot !== false && feed?.summary) {
-    sendJson(ws, sportsUpdatePayload("static", ws.shareId, event.id, {
+    const payload = delayedSportsPayload("static", ws.shareId, event.id, sportsUpdatePayload("static", ws.shareId, event.id, {
       summary: feed.summary,
       fetchedAt: feed.fetchedAt,
       source: "fastcast",
     }));
+    if (payload) sendJson(ws, payload);
   }
 }
 
@@ -616,6 +911,55 @@ function fastcastIsReady(feed) {
 
 function sportsPollAfterSeconds(refreshSeconds) {
   return Math.max(30, Number(refreshSeconds || 60));
+}
+
+function sportsSummaryResponse(kind, shareId, eventId, result, options = {}) {
+  const payload = delayedSportsPayload(kind, shareId, eventId, sportsUpdatePayload(kind, shareId, eventId, result));
+  const delaySeconds = sportsSpoilerDelaySeconds(kind, shareId);
+  const delayedWaitSeconds = !payload && delaySeconds ? nextDelayedSportsAvailableIn(kind, shareId, eventId) : null;
+  return {
+    summary: payload?.summary || null,
+    skipped: !payload,
+    reason: !payload && delaySeconds ? "Waiting for spoiler delay" : undefined,
+    refreshSeconds: options.refreshSeconds,
+    pollAfterSeconds: delayedWaitSeconds || sportsPollAfterSeconds(options.refreshSeconds),
+    realtime: options.realtime,
+    realtimeStatus: options.realtimeStatus || null,
+    fetchedAt: payload?.fetchedAt || null,
+    spoilerDelaySeconds: delaySeconds,
+    delayedWaitSeconds,
+  };
+}
+
+function storedSportsSummaryResponse(kind, shareId, eventId, options = {}) {
+  const delaySeconds = sportsSpoilerDelaySeconds(kind, shareId);
+  const payload = latestAvailableSportsPayload(kind, shareId, eventId, delaySeconds);
+  const delayedWaitSeconds = !payload && delaySeconds ? nextDelayedSportsAvailableIn(kind, shareId, eventId) : null;
+  return {
+    summary: payload?.summary || null,
+    skipped: !payload,
+    reason: !payload && delaySeconds ? "Waiting for spoiler delay" : "No tracked sports snapshot yet",
+    refreshSeconds: options.refreshSeconds,
+    pollAfterSeconds: delayedWaitSeconds || sportsPollAfterSeconds(options.refreshSeconds),
+    realtime: options.realtime,
+    realtimeStatus: options.realtimeStatus || null,
+    fetchedAt: payload?.fetchedAt || null,
+    spoilerDelaySeconds: delaySeconds,
+    delayedWaitSeconds,
+  };
+}
+
+function skippedSportsSummaryResponse(kind, shareId, refreshSeconds, reason) {
+  return {
+    summary: null,
+    skipped: true,
+    reason,
+    refreshSeconds,
+    pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
+    realtime: false,
+    fetchedAt: null,
+    spoilerDelaySeconds: sportsSpoilerDelaySeconds(kind, shareId),
+  };
 }
 
 function kickViewer(kind, shareId, viewerId) {
@@ -1149,7 +1493,7 @@ app.post("/api/shares", requireAuth, (req, res) => {
 });
 
 app.post("/api/static-shares", requireAuth, (req, res) => {
-  let { slug = "", title = "", description = "", icon = "", backgroundImage = "", discordWebhookUrl = "", password = "", maxViewers = null } = req.body || {};
+  let { slug = "", title = "", description = "", icon = "", backgroundImage = "", discordWebhookUrl = "", password = "", maxViewers = null, spoilerDelaySeconds = 0 } = req.body || {};
   slug = cleanSlug(slug);
   if (!slug) slug = crypto.randomUUID();
   title = String(title).trim() || slug;
@@ -1160,14 +1504,15 @@ app.post("/api/static-shares", requireAuth, (req, res) => {
   password = String(password).trim();
   const passwordHash = password ? hashPassword(password) : null;
   const viewerLimit = Number(maxViewers) > 0 ? Number(maxViewers) : null;
+  const spoilerDelay = cleanDelaySeconds(spoilerDelaySeconds);
   try {
     if (db.prepare("SELECT id FROM share_links WHERE slug = ?").get(slug)) throw new Error("That link name is already used");
     const result = db.prepare(
       `
-      INSERT INTO static_shares(slug, title, description, icon, background_image, discord_webhook_url, password_hash, max_viewers, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO static_shares(slug, title, description, icon, background_image, discord_webhook_url, password_hash, max_viewers, spoiler_delay_seconds, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    ).run(slug, title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, viewerLimit, now(), now());
+    ).run(slug, title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, viewerLimit, spoilerDelay, now(), now());
     cleanupShareArtifacts("static", result.lastInsertRowid, false);
     const base = config.publicBaseUrl.replace(/\/$/, "");
     res.json({ slug, url: base ? `${base}/s/${slug}` : `/s/${slug}` });
@@ -1225,6 +1570,7 @@ app.get("/api/shares", requireAuth, (_req, res) => {
         static_shares.opened_count,
         static_shares.last_opened_at,
         static_shares.max_viewers,
+        static_shares.spoiler_delay_seconds,
         static_shares.password_hash IS NOT NULL AS has_password,
         static_shares.discord_webhook_url IS NOT NULL AND static_shares.discord_webhook_url != '' AS has_discord_webhook,
         NULL AS channel_name,
@@ -1443,23 +1789,11 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
   const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
   const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "admin");
   const realtime = fastcastIsReady(fastcastFeed);
-  try {
-    const result = await getEspnGameSummary({
-      league: linkedEvent.espn_league || "nfl",
-      eventId: linkedEvent.espn_event_id,
-    });
-    storeFinalSportsSummary(linkedEvent.id, result.summary, result.fetchedAt);
-    res.json({
-      summary: result.summary,
-      refreshSeconds,
-      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
-      realtime,
-      realtimeStatus: fastcastFeed?.status || null,
-      fetchedAt: result.fetchedAt,
-    });
-  } catch (error) {
-    res.status(502).json({ error: error.message });
-  }
+  res.json(storedSportsSummaryResponse("static", resolved.share.id, linkedEvent.id, {
+    refreshSeconds,
+    realtime,
+    realtimeStatus: fastcastFeed?.status || null,
+  }));
 });
 
 app.get("/api/admin/stream/:ref", requireAuth, async (req, res) => {
@@ -1953,13 +2287,14 @@ app.patch("/api/static-shares/:id", requireAuth, (req, res) => {
   const clearPassword = Boolean(req.body?.clearPassword);
   const passwordHash = password ? hashPassword(password) : clearPassword ? null : share.password_hash;
   const maxViewers = Number(req.body?.maxViewers) > 0 ? Number(req.body.maxViewers) : null;
+  const spoilerDelay = cleanDelaySeconds(req.body?.spoilerDelaySeconds);
   db.prepare(
     `
     UPDATE static_shares
-    SET title = ?, description = ?, icon = ?, background_image = ?, discord_webhook_url = ?, password_hash = ?, max_viewers = ?, updated_at = ?
+    SET title = ?, description = ?, icon = ?, background_image = ?, discord_webhook_url = ?, password_hash = ?, max_viewers = ?, spoiler_delay_seconds = ?, updated_at = ?
     WHERE id = ?
   `,
-  ).run(title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, maxViewers, now(), share.id);
+  ).run(title, description, icon, backgroundImage, discordWebhookUrl, passwordHash, maxViewers, spoilerDelay, now(), share.id);
   const updated = loadStaticShare(share.id);
   const { password_hash: _passwordHash, ...payload } = updated;
   payload.has_password = Boolean(updated.password_hash);
@@ -2087,10 +2422,18 @@ app.post("/api/static-shares/:id/events", requireAuth, (req, res) => {
       now(),
     );
   db.prepare("UPDATE static_shares SET updated_at = ? WHERE id = ?").run(now(), share.id);
-  res.json({ event: loadStaticEvents(share.id).find((event) => event.id === result.lastInsertRowid) });
+  const addedEvent = loadStaticEvents(share.id).find((event) => event.id === result.lastInsertRowid);
+  if (addedEvent?.espn_event_id) {
+    ensureStaticSportsLiveFeed(addedEvent, "schedule-add");
+    runSportsTrackerTick();
+  }
+  res.json({ event: addedEvent });
 });
 
 app.delete("/api/static-shares/:shareId/events/:eventId", requireAuth, (req, res) => {
+  const removedEvent = db
+    .prepare("SELECT * FROM static_share_events WHERE static_share_id = ? AND id = ?")
+    .get(req.params.shareId, req.params.eventId);
   const result = db
     .prepare("DELETE FROM static_share_events WHERE static_share_id = ? AND id = ?")
     .run(req.params.shareId, req.params.eventId);
@@ -2098,6 +2441,9 @@ app.delete("/api/static-shares/:shareId/events/:eventId", requireAuth, (req, res
     res.status(404).json({ error: "not found" });
     return;
   }
+  cleanupDelayedSportsEvent("static", Number(req.params.shareId), Number(req.params.eventId));
+  cleanupDelayedSportsUpdates("static", Number(req.params.shareId), removedEvent?.espn_event_id ? [removedEvent] : []);
+  db.prepare("UPDATE static_shares SET updated_at = ? WHERE id = ?").run(now(), req.params.shareId);
   res.status(204).end();
 });
 
@@ -2378,36 +2724,16 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
   }
   const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
   if (actualStreamingCount("static", share.id) <= 0) {
-    res.json({
-      summary: null,
-      skipped: true,
-      reason: "No active stream viewers",
-      refreshSeconds,
-      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
-      realtime: false,
-      fetchedAt: null,
-    });
+    res.json(skippedSportsSummaryResponse("static", share.id, refreshSeconds, "No active stream viewers"));
     return;
   }
   const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "public");
   const realtime = fastcastIsReady(fastcastFeed);
-  try {
-    const result = await getEspnGameSummary({
-      league: linkedEvent.espn_league || "nfl",
-      eventId: linkedEvent.espn_event_id,
-    });
-    storeFinalSportsSummary(linkedEvent.id, result.summary, result.fetchedAt);
-    res.json({
-      summary: result.summary,
-      refreshSeconds,
-      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
-      realtime,
-      realtimeStatus: fastcastFeed?.status || null,
-      fetchedAt: result.fetchedAt,
-    });
-  } catch (error) {
-    res.status(502).json({ error: error.message });
-  }
+  res.json(storedSportsSummaryResponse("static", share.id, linkedEvent.id, {
+    refreshSeconds,
+    realtime,
+    realtimeStatus: fastcastFeed?.status || null,
+  }));
 });
 
 app.post("/api/public/share/:slug/open", (req, res) => {
@@ -2785,6 +3111,7 @@ try {
 } catch (error) {
   console.error(`Initial guide refresh failed: ${error.message}`);
 }
+runSportsTrackerTick();
 
 setInterval(async () => {
   cleanupExpiredShares();
@@ -2796,6 +3123,7 @@ setInterval(async () => {
       console.error(`Guide refresh failed: ${error.message}`);
     }
   }
+  runSportsTrackerTick();
 }, 60000);
 
 let discordWebhookTickRunning = false;

@@ -4,8 +4,8 @@ import { eventStart, formatDateTime } from "../../lib/time.js";
 import { usernameColor } from "../../lib/userColors.js";
 
 function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
-  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "" });
-  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", clearPassword: false, maxViewers: "" });
+  const [staticForm, setStaticForm] = useState({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "", spoilerDelaySeconds: "" });
+  const [settingsForm, setSettingsForm] = useState({ title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", clearPassword: false, maxViewers: "", spoilerDelaySeconds: "" });
   const [message, setMessage] = useState("");
   const [editing, setEditing] = useState(null);
   const [viewerShare, setViewerShare] = useState(null);
@@ -52,7 +52,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       setMessage(payload.error || "Could not create static share.");
       return;
     }
-    setStaticForm({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "" });
+    setStaticForm({ slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "", spoilerDelaySeconds: "" });
     setMessage(`Created ${payload.url}`);
     await onRefresh();
   }
@@ -72,6 +72,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
         password: "",
         clearPassword: false,
         maxViewers: payload.share.max_viewers || "",
+        spoilerDelaySeconds: payload.share.spoiler_delay_seconds || "",
       });
     }
   }
@@ -98,6 +99,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
       password: "",
       clearPassword: false,
       maxViewers: payload.share.max_viewers || "",
+      spoilerDelaySeconds: payload.share.spoiler_delay_seconds || "",
     });
     setMessage("Saved share settings.");
     await onRefresh();
@@ -198,6 +200,7 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
             <input value={staticForm.discordWebhookUrl} onChange={(event) => setStaticForm({ ...staticForm, discordWebhookUrl: event.target.value })} placeholder="Optional Discord webhook URL" />
             <input value={staticForm.password} onChange={(event) => setStaticForm({ ...staticForm, password: event.target.value })} type="password" placeholder="Optional stream password" />
             <input value={staticForm.maxViewers} onChange={(event) => setStaticForm({ ...staticForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Max stream viewers" />
+            <input value={staticForm.spoilerDelaySeconds} onChange={(event) => setStaticForm({ ...staticForm, spoilerDelaySeconds: event.target.value })} type="number" min="0" max="600" placeholder="Spoiler delay seconds" />
             <button type="submit" className="primary">Create Static Share</button>
           </form>
 
@@ -309,6 +312,10 @@ function ShareAdmin({ shares, selectedProgram, onRefresh, onClose }) {
                 <label>
                   Max stream viewers
                   <input value={settingsForm.maxViewers} onChange={(event) => setSettingsForm({ ...settingsForm, maxViewers: event.target.value })} type="number" min="0" placeholder="Unlimited" />
+                </label>
+                <label>
+                  Spoiler delay
+                  <input value={settingsForm.spoilerDelaySeconds} onChange={(event) => setSettingsForm({ ...settingsForm, spoilerDelaySeconds: event.target.value })} type="number" min="0" max="600" placeholder="0 seconds" />
                 </label>
                 <label className="checkboxLabel">
                   <input checked={settingsForm.clearPassword} onChange={(event) => setSettingsForm({ ...settingsForm, clearPassword: event.target.checked, password: "" })} type="checkbox" disabled={!editing.has_password} />

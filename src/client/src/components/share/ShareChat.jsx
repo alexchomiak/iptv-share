@@ -50,7 +50,19 @@ function ViewerSection({ title, viewers, admin, defaultOpen = false, onKickViewe
   );
 }
 
-function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, streamActive, admin = false, onKickViewer, onUnkickViewer }) {
+function ShareChat({
+  slug,
+  locked,
+  onViewerToken,
+  onSlotStatus,
+  onPresence,
+  onSportsUpdate,
+  streamActive,
+  admin = false,
+  onKickViewer,
+  onUnkickViewer,
+  sportsEventId,
+}) {
   const [username, setUsername] = useState(() => localStorage.getItem(usernameKey) || "");
   const [draftName, setDraftName] = useState(() => localStorage.getItem(usernameKey) || "");
   const [messages, setMessages] = useState([]);
@@ -70,7 +82,7 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
 
     socket.addEventListener("open", () => {
       const token = localStorage.getItem(tokenKey) || "";
-      socket.send(JSON.stringify({ type: "hello", username, token }));
+      socket.send(JSON.stringify({ type: "hello", username, token, sportsEventId }));
       setStatus("");
     });
     socket.addEventListener("message", (event) => {
@@ -85,6 +97,7 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
         setViewers(payload.viewers || []);
         onPresence?.(payload.viewers || []);
       }
+      if (payload.type === "sportsUpdate") onSportsUpdate?.(payload);
       if (payload.type === "kicked") {
         setStatus("You were removed from this stream.");
         onViewerToken?.("");
@@ -102,13 +115,18 @@ function ShareChat({ slug, locked, onViewerToken, onSlotStatus, onPresence, stre
       socket.close();
       socketRef.current = null;
     };
-  }, [admin, locked, onPresence, onSlotStatus, onViewerToken, slug, tokenKey, username]);
+  }, [admin, locked, onPresence, onSlotStatus, onSportsUpdate, onViewerToken, slug, sportsEventId, tokenKey, username]);
 
   useEffect(() => {
     if (!username || socketRef.current?.readyState !== WebSocket.OPEN) return;
     if (admin) return;
-    socketRef.current.send(JSON.stringify({ type: "streamState", active: Boolean(streamActive) }));
-  }, [admin, streamActive, username]);
+    socketRef.current.send(JSON.stringify({ type: "streamState", active: Boolean(streamActive), sportsEventId }));
+  }, [admin, sportsEventId, streamActive, username]);
+
+  useEffect(() => {
+    if (!username || !admin || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    socketRef.current.send(JSON.stringify({ type: "streamState", active: Boolean(streamActive), sportsEventId }));
+  }, [admin, sportsEventId, streamActive, username]);
 
   useEffect(() => {
     const element = messagesRef.current;

@@ -61,6 +61,14 @@ function AdminSharePage({ shareRef }) {
   const [clockNow, setClockNow] = useState(() => Date.now());
   const handleViewerToken = useCallback((token) => setViewerToken(token), []);
   const handlePresence = useCallback((nextViewers) => setViewers(nextViewers), []);
+  const handleSlotStatus = useCallback(() => {}, []);
+
+  function sportsPollDelaySeconds(payload) {
+    if (Number(payload.pollAfterSeconds) > 0) return Number(payload.pollAfterSeconds);
+    const refreshSeconds = Math.max(5, Number(payload.refreshSeconds || 60));
+    if (!payload.realtime) return Math.max(30, refreshSeconds);
+    return 300;
+  }
 
   function sportsSummaryIsFinal(summary) {
     return Boolean(summary?.completed)
@@ -68,6 +76,19 @@ function AdminSharePage({ shareRef }) {
       || String(summary?.status || "").toLowerCase().includes("final")
       || String(summary?.statusDetail || "").toLowerCase().includes("final");
   }
+
+  const handleSportsUpdate = useCallback((payload) => {
+    if (!payload?.summary || !payload.eventId || payload.eventId !== share?.active_event_id) return;
+    setSportsSummary({
+      ...payload.summary,
+      refreshSeconds: payload.refreshSeconds,
+      realtime: true,
+      realtimeStatus: payload.source || "fastcast",
+      fetchedAt: payload.fetchedAt,
+    });
+    setSportsMessage("");
+    if (sportsSummaryIsFinal(payload.summary)) loadShare();
+  }, [share?.active_event_id]);
 
   async function loadShare({ hydrateViewers = false } = {}) {
     const response = await api(`/api/admin/share/${encodeURIComponent(shareRef)}`);
@@ -137,10 +158,21 @@ function AdminSharePage({ shareRef }) {
       const payload = await response.json();
       if (cancelled) return;
       if (response.ok) {
-        if (payload.summary) setSportsSummary({ ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt });
+        if (payload.summary) {
+          setSportsSummary({
+            ...payload.summary,
+            refreshSeconds: payload.refreshSeconds,
+            realtime: payload.realtime,
+            realtimeStatus: payload.realtimeStatus,
+            fetchedAt: payload.fetchedAt,
+          });
+        }
         setSportsMessage("");
         if (sportsSummaryIsFinal(payload.summary)) loadShare();
-        timer = setTimeout(loadSportsSummary, Math.max(30, Number(payload.refreshSeconds || 60)) * 1000);
+        timer = setTimeout(
+          loadSportsSummary,
+          sportsPollDelaySeconds(payload) * 1000,
+        );
       } else {
         setSportsMessage(payload.error || "Live sports data unavailable.");
         timer = setTimeout(loadSportsSummary, 60000);
@@ -354,9 +386,11 @@ function AdminSharePage({ shareRef }) {
           locked={false}
           admin
           onViewerToken={handleViewerToken}
-          onSlotStatus={() => {}}
+          onSlotStatus={handleSlotStatus}
           onPresence={handlePresence}
-          streamActive={false}
+          onSportsUpdate={handleSportsUpdate}
+          streamActive={streamActive}
+          sportsEventId={share.active_event_id}
           onKickViewer={kickViewer}
           onUnkickViewer={unkickViewer}
         />

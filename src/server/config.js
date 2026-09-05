@@ -32,6 +32,20 @@ export const config = {
     ncaafb: numberEnv("ESPN_LIVE_CACHE_SECONDS_NCAAFB", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
     ncaamb: numberEnv("ESPN_LIVE_CACHE_SECONDS_NCAAMB", process.env.ESPN_LIVE_CACHE_SECONDS || 60),
   },
+  espnSummaryCacheSecondsByLeague: {
+    nfl: numberEnv("ESPN_SUMMARY_CACHE_SECONDS_NFL", 180),
+    mlb: numberEnv("ESPN_SUMMARY_CACHE_SECONDS_MLB", 180),
+    nba: numberEnv("ESPN_SUMMARY_CACHE_SECONDS_NBA", 180),
+    ncaafb: numberEnv("ESPN_SUMMARY_CACHE_SECONDS_NCAAFB", 180),
+    ncaamb: numberEnv("ESPN_SUMMARY_CACHE_SECONDS_NCAAMB", 180),
+  },
+  espnFastcastCacheSecondsByLeague: {
+    nfl: numberEnv("ESPN_FASTCAST_CACHE_SECONDS_NFL", 10),
+    mlb: numberEnv("ESPN_FASTCAST_CACHE_SECONDS_MLB", 5),
+    nba: numberEnv("ESPN_FASTCAST_CACHE_SECONDS_NBA", 10),
+    ncaafb: numberEnv("ESPN_FASTCAST_CACHE_SECONDS_NCAAFB", 10),
+    ncaamb: numberEnv("ESPN_FASTCAST_CACHE_SECONDS_NCAAMB", 10),
+  },
   discordWebhookLeadSeconds: numberEnv("DISCORD_WEBHOOK_LEAD_SECONDS", 900),
   discordWebhookTickSeconds: numberEnv("DISCORD_WEBHOOK_TICK_SECONDS", 60),
   discordWebhookRefreshSecondsByLeague: {

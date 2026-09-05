@@ -24,12 +24,32 @@ function SharePage({ slug }) {
   }, []);
   const hasActiveStreamViewer = streamActive || viewers.some((viewer) => viewer.streaming);
 
+  function sportsPollDelaySeconds(payload) {
+    if (Number(payload.pollAfterSeconds) > 0) return Number(payload.pollAfterSeconds);
+    const refreshSeconds = Math.max(5, Number(payload.refreshSeconds || 60));
+    if (!payload.realtime) return Math.max(30, refreshSeconds);
+    return 300;
+  }
+
   function sportsSummaryIsFinal(summary) {
     return Boolean(summary?.completed)
       || String(summary?.state || "").toLowerCase() === "post"
       || String(summary?.status || "").toLowerCase().includes("final")
       || String(summary?.statusDetail || "").toLowerCase().includes("final");
   }
+
+  const handleSportsUpdate = useCallback((payload) => {
+    if (!payload?.summary || !payload.eventId || payload.eventId !== share?.active_event_id) return;
+    setSportsSummary({
+      ...payload.summary,
+      refreshSeconds: payload.refreshSeconds,
+      realtime: true,
+      realtimeStatus: payload.source || "fastcast",
+      fetchedAt: payload.fetchedAt,
+    });
+    setSportsMessage("");
+    if (sportsSummaryIsFinal(payload.summary)) loadShare();
+  }, [share?.active_event_id]);
 
   async function loadShare() {
     const response = await fetch(`/api/public/share/${encodeURIComponent(slug)}`);
@@ -95,11 +115,20 @@ function SharePage({ slug }) {
         if (payload.skipped || !payload.summary) {
           setSportsMessage("");
         } else {
-          setSportsSummary({ ...payload.summary, refreshSeconds: payload.refreshSeconds, fetchedAt: payload.fetchedAt });
+          setSportsSummary({
+            ...payload.summary,
+            refreshSeconds: payload.refreshSeconds,
+            realtime: payload.realtime,
+            realtimeStatus: payload.realtimeStatus,
+            fetchedAt: payload.fetchedAt,
+          });
           setSportsMessage("");
           if (sportsSummaryIsFinal(payload.summary)) loadShare();
         }
-        timer = setTimeout(loadSportsSummary, Math.max(30, Number(payload.refreshSeconds || 60)) * 1000);
+        timer = setTimeout(
+          loadSportsSummary,
+          sportsPollDelaySeconds(payload) * 1000,
+        );
       } else {
         setSportsMessage(payload.error || "Live sports data unavailable.");
         timer = setTimeout(loadSportsSummary, 60000);
@@ -202,7 +231,9 @@ function SharePage({ slug }) {
             onViewerToken={handleViewerToken}
             onSlotStatus={handleSlotStatus}
             onPresence={setViewers}
+            onSportsUpdate={handleSportsUpdate}
             streamActive={streamActive}
+            sportsEventId={share.active_event_id}
           />
         </section>
       )}

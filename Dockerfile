@@ -1,6 +1,7 @@
 FROM node:22-bookworm-slim AS deps
 
 WORKDIR /app
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
@@ -15,6 +16,16 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
+FROM node:22-bookworm-slim AS prod-deps
+
+WORKDIR /app
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ \
+  && corepack enable \
+  && pnpm install --prod --frozen-lockfile=false \
+  && rm -rf /var/lib/apt/lists/*
+
 FROM node:22-bookworm-slim
 
 ENV NODE_ENV=production
@@ -26,7 +37,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ffmpeg libva-drm2 mesa-va-drivers vainfo \
   && if [ "$(dpkg --print-architecture)" = "amd64" ]; then apt-get install -y --no-install-recommends intel-media-va-driver; fi \
   && rm -rf /var/lib/apt/lists/*
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./package.json
 COPY src/server ./src/server

@@ -9,7 +9,16 @@ import { config } from "./config.js";
 import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
-import { espnLeagues, espnLiveRefreshSeconds, getEspnGameSummary, searchEspnGames } from "./espn.js";
+import {
+  espnFastcastDebug,
+  espnLeagues,
+  espnFastcastRefreshSeconds,
+  espnSummaryRefreshSeconds,
+  getEspnGameSummary,
+  getEspnRawGamePackage,
+  searchEspnGames,
+  watchEspnFastcastGame,
+} from "./espn.js";
 import {
   decodeTarget,
   inferStreamKind,
@@ -26,6 +35,7 @@ const distDir = path.join(config.rootDir, "dist");
 const viewerSockets = new Map();
 const adminSockets = new Set();
 const activeStreamResponses = new Map();
+const lastPresenceSignatures = new Map();
 const viewerActiveSeconds = 45;
 const offlineViewerVisibleSeconds = 3600;
 const kickedViewerVisibleSeconds = 86400;
@@ -126,7 +136,7 @@ function shareKindColumn(kind) {
 function archiveExpiredStaticEvents() {
   db.prepare(
     `
-    INSERT OR IGNORE INTO static_share_past_games(
+    INSERT INTO static_share_past_games(
       static_share_id, original_event_id, title, description, icon, starts_at, ends_at,
       espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, archived_at
     )
@@ -136,6 +146,19 @@ function archiveExpiredStaticEvents() {
     FROM static_share_events
     WHERE espn_event_id IS NOT NULL
       AND espn_final_summary IS NOT NULL
+    ON CONFLICT(static_share_id, original_event_id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      icon = excluded.icon,
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at,
+      espn_league = excluded.espn_league,
+      espn_event_id = excluded.espn_event_id,
+      espn_name = excluded.espn_name,
+      espn_short_name = excluded.espn_short_name,
+      espn_final_summary = excluded.espn_final_summary,
+      espn_final_fetched_at = excluded.espn_final_fetched_at,
+      archived_at = excluded.archived_at
   `,
   ).run(now());
 }
@@ -143,7 +166,7 @@ function archiveExpiredStaticEvents() {
 function archiveStaticEventSnapshot(staticEventId) {
   db.prepare(
     `
-    INSERT OR IGNORE INTO static_share_past_games(
+    INSERT INTO static_share_past_games(
       static_share_id, original_event_id, title, description, icon, starts_at, ends_at,
       espn_league, espn_event_id, espn_name, espn_short_name, espn_final_summary, espn_final_fetched_at, archived_at
     )
@@ -154,6 +177,19 @@ function archiveStaticEventSnapshot(staticEventId) {
     WHERE id = ?
       AND espn_event_id IS NOT NULL
       AND espn_final_summary IS NOT NULL
+    ON CONFLICT(static_share_id, original_event_id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      icon = excluded.icon,
+      starts_at = excluded.starts_at,
+      ends_at = excluded.ends_at,
+      espn_league = excluded.espn_league,
+      espn_event_id = excluded.espn_event_id,
+      espn_name = excluded.espn_name,
+      espn_short_name = excluded.espn_short_name,
+      espn_final_summary = excluded.espn_final_summary,
+      espn_final_fetched_at = excluded.espn_final_fetched_at,
+      archived_at = excluded.archived_at
   `,
   ).run(now(), staticEventId);
 }
@@ -428,14 +464,15 @@ function sendViewerSlot(kind, shareId, token, payload) {
 
 function promoteWaitlist(kind, shareId) {
   const maxViewers = shareMaxViewers(kind, shareId);
-  if (maxViewers <= 0) return;
+  if (maxViewers <= 0) return 0;
   const available = maxViewers - activeStreamCount(kind, shareId);
-  if (available <= 0) return;
+  if (available <= 0) return 0;
   const promoted = waitingViewers(kind, shareId).slice(0, available);
   for (const viewer of promoted) {
     db.prepare("UPDATE share_viewers SET wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = ? WHERE id = ?").run(now(), viewer.id);
     sendViewerSlot(kind, shareId, viewer.token, { status: "ready" });
   }
+  return promoted.length;
 }
 
 function requestViewerStream(kind, shareId, token) {
@@ -476,13 +513,31 @@ function shareSocketKey(kind, shareId) {
   return `${shareKindColumn(kind)}:${shareId}`;
 }
 
-function broadcastShareState(kind, shareId) {
+function viewerStateSignature(viewers) {
+  return JSON.stringify(viewers.map((viewer) => ({
+    id: viewer.id,
+    ids: viewer.ids,
+    username: viewer.username,
+    online: viewer.online,
+    streaming: viewer.streaming,
+    waiting: viewer.waiting,
+    kicked: viewer.kicked,
+    duplicate_count: viewer.duplicate_count,
+  })));
+}
+
+function broadcastShareState(kind, shareId, options = {}) {
   const key = shareSocketKey(kind, shareId);
-  const payload = { type: "presence", viewers: loadViewers(kind, shareId) };
+  const viewers = loadViewers(kind, shareId);
+  const signature = viewerStateSignature(viewers);
+  if (!options.force && lastPresenceSignatures.get(key) === signature) return false;
+  lastPresenceSignatures.set(key, signature);
+  const payload = { type: "presence", viewers };
   for (const ws of viewerSockets.get(key) || []) sendJson(ws, payload);
   for (const ws of adminSockets) {
     if (!ws.shareFilter || ws.shareFilter === key) sendJson(ws, { ...payload, shareKind: shareKindColumn(kind), shareId });
   }
+  return true;
 }
 
 function broadcastChat(kind, shareId, message) {
@@ -501,6 +556,66 @@ function broadcastChatHistory(kind, shareId) {
   for (const ws of adminSockets) {
     if (!ws.shareFilter || ws.shareFilter === key) sendJson(ws, { type: "chatHistory", shareKind, shareId, messages });
   }
+}
+
+function broadcastSportsUpdate(kind, shareId, eventId, result) {
+  const payload = sportsUpdatePayload(kind, shareId, eventId, result);
+  for (const ws of viewerSockets.get(shareSocketKey(kind, shareId)) || []) sendJson(ws, payload);
+  for (const ws of adminSockets) {
+    if (!ws.shareFilter || ws.shareFilter === shareSocketKey(kind, shareId)) sendJson(ws, payload);
+  }
+}
+
+function sportsUpdatePayload(kind, shareId, eventId, result) {
+  return {
+    type: "sportsUpdate",
+    shareKind: shareKindColumn(kind),
+    shareId,
+    eventId,
+    summary: result.summary,
+    refreshSeconds: espnFastcastRefreshSeconds(result.summary?.league || result.summary?.sport || "mlb"),
+    fetchedAt: result.fetchedAt,
+    source: result.source || result.summary?.source || "espn",
+  };
+}
+
+function ensureStaticSportsLiveFeed(event, reason = "viewer") {
+  if (!event?.static_share_id || !event?.id || !event?.espn_event_id) return null;
+  const league = event.espn_league || "nfl";
+  return watchEspnFastcastGame({
+    league,
+    eventId: event.espn_event_id,
+    watcherId: `static:${event.static_share_id}:event:${event.id}:${reason}`,
+    ttlSeconds: Math.max(120, espnFastcastRefreshSeconds(league) * 12),
+    onUpdate: (result) => {
+      storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+      broadcastSportsUpdate("static", event.static_share_id, event.id, result);
+    },
+  });
+}
+
+function ensureSportsPushForSocket(ws, eventId, reason = "viewer", options = {}) {
+  if (ws.shareKind !== "static" || !eventId) return;
+  const event = db
+    .prepare("SELECT * FROM static_share_events WHERE static_share_id = ? AND id = ?")
+    .get(ws.shareId, eventId);
+  if (!event?.espn_event_id) return;
+  const feed = ensureStaticSportsLiveFeed(event, reason);
+  if (options.sendSnapshot !== false && feed?.summary) {
+    sendJson(ws, sportsUpdatePayload("static", ws.shareId, event.id, {
+      summary: feed.summary,
+      fetchedAt: feed.fetchedAt,
+      source: "fastcast",
+    }));
+  }
+}
+
+function fastcastIsReady(feed) {
+  return Boolean(feed?.summary);
+}
+
+function sportsPollAfterSeconds(refreshSeconds) {
+  return Math.max(30, Number(refreshSeconds || 60));
 }
 
 function kickViewer(kind, shareId, viewerId) {
@@ -559,7 +674,7 @@ async function withShareCutoff(cutoff, res, action) {
   let timer = null;
   let checking = false;
   if (cutoff?.open_ended_cutoff) {
-    const intervalMs = Math.max(30000, espnLiveRefreshSeconds(cutoff.espn_league || "nfl") * 1000);
+    const intervalMs = Math.max(30000, espnSummaryRefreshSeconds(cutoff.espn_league || "nfl") * 1000);
     timer = setInterval(async () => {
       if (checking || res.destroyed) return;
       checking = true;
@@ -668,7 +783,7 @@ async function resolveScheduledStreamEntitlement(event) {
     });
     storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
     if (sportsSummaryIsFinal(result.summary)) {
-      const finalObservedAt = Number(result.fetchedAt || event.espn_final_fetched_at || now());
+      const finalObservedAt = sportsFinalObservedAt(result.summary, event.espn_final_fetched_at || result.fetchedAt || now());
       return {
         event,
         streamable: now() <= finalObservedAt + config.streamGraceSeconds,
@@ -940,6 +1055,24 @@ app.get("/api/sports/espn/summary", requireAuth, async (req, res) => {
   }
 });
 
+app.get("/api/sports/espn/game-package-debug", requireAuth, async (req, res) => {
+  const eventId = String(req.query.eventId || "").trim();
+  const league = String(req.query.league || "mlb");
+  if (!eventId) {
+    res.status(400).json({ error: "eventId is required" });
+    return;
+  }
+  try {
+    res.json(await getEspnRawGamePackage({ league, eventId }));
+  } catch (error) {
+    res.status(502).json({ error: error.message });
+  }
+});
+
+app.get("/api/sports/espn/fastcast-debug", requireAuth, (_req, res) => {
+  res.json({ feeds: espnFastcastDebug() });
+});
+
 app.get("/api/stream/:channelId", requireAuth, async (req, res) => {
   const channel = db.prepare("SELECT stream_url FROM channels WHERE id = ?").get(req.params.channelId);
   if (!channel) {
@@ -1177,6 +1310,7 @@ function publicBaseUrl() {
 }
 
 async function adminSafeStaticShare(share) {
+  await finalizeCompletedStaticSportsEvents(share.id);
   const activeEvent = await findActiveStaticEvent(share.id);
   const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
@@ -1306,7 +1440,9 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
     res.status(404).json({ error: "No ESPN game linked" });
     return;
   }
-  const refreshSeconds = espnLiveRefreshSeconds(linkedEvent.espn_league || "nfl");
+  const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
+  const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "admin");
+  const realtime = fastcastIsReady(fastcastFeed);
   try {
     const result = await getEspnGameSummary({
       league: linkedEvent.espn_league || "nfl",
@@ -1316,6 +1452,9 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
     res.json({
       summary: result.summary,
       refreshSeconds,
+      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
+      realtime,
+      realtimeStatus: fastcastFeed?.status || null,
       fetchedAt: result.fetchedAt,
     });
   } catch (error) {
@@ -1434,15 +1573,78 @@ function sportsSummaryIsFinal(summary) {
     || String(summary?.statusDetail || "").toLowerCase().includes("final");
 }
 
+function sportsFinalObservedAt(summary, fallback = now()) {
+  const timestamps = [
+    summary?.completedAt,
+    summary?.endDate,
+    ...(Array.isArray(summary?.recentPlays) ? summary.recentPlays.map((play) => play?.wallclock) : []),
+  ];
+  const latest = timestamps
+    .map((value) => {
+      const parsed = Date.parse(value || "");
+      return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b - a)[0];
+  return Number(latest || fallback || now());
+}
+
+function archiveSafeSportsSummary(summary) {
+  if (!summary) return summary;
+  const { recentPlays: _recentPlays, ...snapshot } = summary;
+  return snapshot;
+}
+
 function storeFinalSportsSummary(staticEventId, summary, fetchedAt) {
   if (!staticEventId || !summary || !sportsSummaryIsFinal(summary)) return;
+  const finalObservedAt = sportsFinalObservedAt(summary, fetchedAt);
   db.prepare("UPDATE static_share_events SET espn_final_summary = ?, espn_final_fetched_at = ?, updated_at = ? WHERE id = ?").run(
-    JSON.stringify(summary),
-    Number(fetchedAt || now()),
+    JSON.stringify(archiveSafeSportsSummary(summary)),
+    finalObservedAt,
     now(),
     staticEventId,
   );
   archiveStaticEventSnapshot(staticEventId);
+}
+
+async function finalizeCompletedStaticSportsEvents(shareId) {
+  const events = db
+    .prepare(
+      `
+      SELECT id, espn_league, espn_event_id, starts_at, ends_at
+      FROM static_share_events
+      WHERE static_share_id = ?
+        AND espn_event_id IS NOT NULL
+        AND espn_final_summary IS NULL
+        AND starts_at - ? <= ?
+        AND (
+          ends_at + ? < ?
+          OR starts_at >= ?
+        )
+      ORDER BY starts_at
+      LIMIT 20
+    `,
+    )
+    .all(
+      shareId,
+      config.streamGraceSeconds,
+      now(),
+      config.streamGraceSeconds,
+      now(),
+      now() - sportsEventOverrunLookupSeconds,
+    );
+
+  for (const event of events) {
+    try {
+      const result = await getEspnGameSummary({
+        league: event.espn_league || "nfl",
+        eventId: event.espn_event_id,
+      });
+      storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+    } catch (error) {
+      console.warn(`ESPN finalization failed for static event ${event.id}: ${error.message}`);
+    }
+  }
 }
 
 function claimDelivery(key, shareId, eventId) {
@@ -1602,6 +1804,7 @@ async function runDiscordWebhookTick() {
       const league = event.espn_league || "nfl";
       const interval = config.discordWebhookRefreshSecondsByLeague?.[league] || 180;
       if (Number(event.discord_last_checked_at || 0) && current - Number(event.discord_last_checked_at) < interval) continue;
+      ensureStaticSportsLiveFeed(event, "discord");
       const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
       storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
 
@@ -1717,13 +1920,14 @@ function publicPastGames(share) {
   }));
 }
 
-app.get("/api/static-shares/:id", requireAuth, (req, res) => {
+app.get("/api/static-shares/:id", requireAuth, async (req, res) => {
   cleanupExpiredShares();
   const share = loadStaticShare(req.params.id);
   if (!share) {
     res.status(404).json({ error: "not found" });
     return;
   }
+  await finalizeCompletedStaticSportsEvents(share.id);
   const { password_hash: _passwordHash, ...payload } = share;
   payload.has_password = Boolean(share.password_hash);
   payload.url = `${config.publicBaseUrl.replace(/\/$/, "") || ""}/s/${share.slug}`;
@@ -1988,6 +2192,7 @@ app.get("/api/public/share/:slug", async (req, res) => {
   const staticShare = db.prepare("SELECT * FROM static_shares WHERE slug = ?").get(req.params.slug);
   if (staticShare) {
     const locked = !staticShareIsUnlocked(req, staticShare);
+    if (!locked) await finalizeCompletedStaticSportsEvents(staticShare.id);
     const activeEvent = locked ? null : await findActiveStaticEvent(staticShare.id);
     const events = publicStaticEvents(staticShare);
     const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
@@ -2171,17 +2376,21 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
     res.status(404).json({ error: "No ESPN game linked" });
     return;
   }
-  const refreshSeconds = espnLiveRefreshSeconds(linkedEvent.espn_league || "nfl");
+  const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
   if (actualStreamingCount("static", share.id) <= 0) {
     res.json({
       summary: null,
       skipped: true,
       reason: "No active stream viewers",
       refreshSeconds,
+      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
+      realtime: false,
       fetchedAt: null,
     });
     return;
   }
+  const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "public");
+  const realtime = fastcastIsReady(fastcastFeed);
   try {
     const result = await getEspnGameSummary({
       league: linkedEvent.espn_league || "nfl",
@@ -2191,6 +2400,9 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
     res.json({
       summary: result.summary,
       refreshSeconds,
+      pollAfterSeconds: sportsPollAfterSeconds(refreshSeconds),
+      realtime,
+      realtimeStatus: fastcastFeed?.status || null,
       fetchedAt: result.fetchedAt,
     });
   } catch (error) {
@@ -2414,9 +2626,9 @@ function handleShareSocket(ws, req, slug) {
     touchViewer(ws.viewerToken);
     if (ws.streamActive) {
       db.prepare("UPDATE share_viewers SET stream_last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(now(), ws.viewerToken);
+      ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-heartbeat" : "viewer-heartbeat", { sendSnapshot: false });
     }
-    promoteWaitlist(kind, shareId);
-    broadcastShareState(kind, shareId);
+    if (promoteWaitlist(kind, shareId)) broadcastShareState(kind, shareId);
   }, 15000);
 
   sendJson(ws, { type: "ready" });
@@ -2437,8 +2649,10 @@ function handleShareSocket(ws, req, slug) {
       const username = cleanViewerName(payload.username);
       const viewer = upsertViewer(kind, shareId, token, username);
       ws.viewerToken = token;
+      ws.sportsEventId = Number(payload.sportsEventId || 0) || null;
       sendJson(ws, { type: "hello", token, viewer: viewerPublicRow(viewer) });
-      broadcastShareState(kind, shareId);
+      if (adminUser) ensureSportsPushForSocket(ws, ws.sportsEventId, "admin-socket");
+      broadcastShareState(kind, shareId, { force: true });
       return;
     }
 
@@ -2483,6 +2697,7 @@ function handleShareSocket(ws, req, slug) {
     if (payload.type === "streamState") {
       if (!ws.viewerToken) return;
       ws.streamActive = Boolean(payload.active);
+      ws.sportsEventId = Number(payload.sportsEventId || 0) || ws.sportsEventId || null;
       const viewer = db.prepare("SELECT stream_granted_at FROM share_viewers WHERE token = ? AND kicked_at IS NULL").get(ws.viewerToken);
       const hasRecentGrant = Number(viewer?.stream_granted_at || 0) >= now() - viewerActiveSeconds;
       if (ws.streamActive && hasRecentGrant) {
@@ -2491,7 +2706,8 @@ function handleShareSocket(ws, req, slug) {
         db.prepare("UPDATE share_viewers SET stream_last_seen_at = NULL, stream_granted_at = NULL WHERE token = ? AND kicked_at IS NULL").run(ws.viewerToken);
       }
       if (!ws.streamActive) promoteWaitlist(kind, shareId);
-      broadcastShareState(kind, shareId);
+      if (ws.streamActive) ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-stream" : "viewer-stream");
+      broadcastShareState(kind, shareId, { force: true });
     }
   });
 
@@ -2509,7 +2725,7 @@ function handleShareSocket(ws, req, slug) {
       if (!sockets.size) viewerSockets.delete(key);
     }
     promoteWaitlist(kind, shareId);
-    broadcastShareState(kind, shareId);
+    broadcastShareState(kind, shareId, { force: true });
   });
 }
 
@@ -2533,8 +2749,11 @@ function handleAdminSocket(ws, req) {
       const kind = payload.shareKind === "static" ? "static" : "temporary";
       const shareId = Number(payload.shareId || 0);
       ws.shareFilter = shareSocketKey(kind, shareId);
+      ws.shareKind = kind;
+      ws.shareId = shareId;
       sendJson(ws, { type: "presence", shareKind: shareKindColumn(kind), shareId, viewers: loadViewers(kind, shareId) });
       sendJson(ws, { type: "chatHistory", shareKind: shareKindColumn(kind), shareId, messages: loadRecentChat(kind, shareId) });
+      ensureSportsPushForSocket(ws, Number(payload.sportsEventId || 0), "admin-subscribe");
     }
     if (payload.type === "kick") {
       const kind = payload.shareKind === "static" ? "static" : "temporary";

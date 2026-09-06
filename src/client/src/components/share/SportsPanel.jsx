@@ -374,7 +374,7 @@ function RefreshNote({ seconds, fetchedAt, spoilerDelaySeconds = 0 }) {
   const mode = fetchedAt && seconds ? "Stats update" : "Stats refresh";
   return (
     <small className="sportsRefreshNote">
-      {mode} every {formatRefreshInterval(seconds)}{delayText}{fetchedAt ? ` · last updated ${formatUpdatedAgo(fetchedAt)}` : ""}{fetchedAt ? "." : ""}
+      {mode} every {formatRefreshInterval(seconds)}{fetchedAt ? ` · last updated ${formatUpdatedAgo(fetchedAt)}` : ""}{fetchedAt ? "." : ""}
     </small>
   );
 }

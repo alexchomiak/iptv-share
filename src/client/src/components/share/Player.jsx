@@ -102,6 +102,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const videoRef = React.useRef(null);
   const [message, setMessage] = useState("");
   const [armed, setArmed] = useState(false);
+  const armPlayback = () => setArmed(true);
 
   useEffect(() => {
     setArmed(false);
@@ -185,13 +186,20 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
         controls
         playsInline
         preload="none"
-        onPlay={() => setArmed(true)}
-        onPointerDown={() => setArmed(true)}
-        onTouchStart={() => setArmed(true)}
+        onPlay={armPlayback}
+        onPointerDown={armPlayback}
+        onTouchStart={armPlayback}
         onKeyDown={(event) => {
-          if (event.key === " " || event.key === "Enter") setArmed(true);
+          if (event.key === " " || event.key === "Enter") armPlayback();
         }}
       />
+      {!armed && (
+        <button type="button" className="playerStartOverlay" onClick={armPlayback} aria-label="Play stream">
+          <span className="playerStartButton" aria-hidden="true">
+            <span />
+          </span>
+        </button>
+      )}
       {message && <p className="playerMessage">{message}</p>}
     </section>
   );

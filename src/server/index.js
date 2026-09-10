@@ -8,6 +8,7 @@ import { WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
+import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
   espnFastcastDebug,
@@ -1315,6 +1316,34 @@ app.get("/api/channel-logo/:id", requireAuth, async (req, res) => {
     await proxyImage(res, channel.logo);
   } catch {
     res.status(502).end();
+  }
+});
+
+app.get("/epg/nfl-m3u.xml", async (_req, res) => {
+  try {
+    res.setHeader("Content-Type", "application/xml; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(await generatedNflXmltv());
+  } catch (error) {
+    console.error("NFL generated EPG failed", error);
+    res.status(500).type("text/plain").send("NFL generated EPG failed");
+  }
+});
+
+app.get("/api/epg/nfl-m3u/preview", requireAuth, async (_req, res) => {
+  try {
+    const mappings = await generatedNflMappings();
+    res.json({
+      feedUrl: `${publicBaseUrl()}/epg/nfl-m3u.xml`,
+      sourceUrl: config.nflMapperSourceUrl,
+      timezone: config.nflMapperTimezone,
+      durationSeconds: config.nflMapperDurationSeconds,
+      parsed: mappings.filter((mapping) => mapping.parsed),
+      ignored: mappings.filter((mapping) => !mapping.parsed),
+    });
+  } catch (error) {
+    console.error("NFL generated EPG preview failed", error);
+    res.status(500).json({ error: "NFL generated EPG preview failed" });
   }
 });
 

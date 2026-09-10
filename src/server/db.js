@@ -30,6 +30,7 @@ export function initDb() {
       name TEXT NOT NULL,
       logo TEXT,
       group_name TEXT,
+      source_title TEXT,
       channel_number TEXT,
       channel_sort INTEGER,
       stream_url TEXT NOT NULL,
@@ -227,6 +228,7 @@ export function initDb() {
   ensureColumn("share_viewers", "stream_granted_at", "INTEGER");
   ensureColumn("channels", "channel_number", "TEXT");
   ensureColumn("channels", "channel_sort", "INTEGER");
+  ensureColumn("channels", "source_title", "TEXT");
   ensureColumn("static_share_events", "espn_final_summary", "TEXT");
   ensureColumn("static_share_events", "espn_final_fetched_at", "INTEGER");
   ensureColumn("static_share_events", "discord_last_period", "INTEGER");

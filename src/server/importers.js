@@ -42,13 +42,14 @@ export function parseM3u(text) {
     if (line.startsWith("#EXTINF")) {
       const attrs = {};
       for (const match of line.matchAll(attrPattern)) attrs[match[1]] = match[2];
-      const name = line.includes(",") ? line.split(",").pop().trim() : attrs["tvg-name"] || "Channel";
+      const sourceTitle = line.includes(",") ? line.split(",").pop().trim() : attrs["tvg-name"] || "Channel";
       const channelNumber = firstAttr(attrs, ["tvg-chno", "tvg-ch", "tvg-number", "tvg-no", "channel-number", "ch-number"]);
       current = {
-        tvgId: attrs["tvg-id"] || attrs["channel-id"] || name,
-        name: attrs["tvg-name"] || name,
+        tvgId: attrs["tvg-id"] || attrs["channel-id"] || sourceTitle,
+        name: attrs["tvg-name"] || sourceTitle,
         logo: attrs["tvg-logo"] || "",
         groupName: attrs["group-title"] || "Other",
+        sourceTitle,
         channelNumber,
         channelSort: parseChannelSort(channelNumber, playlistIndex),
       };
@@ -112,12 +113,13 @@ export async function refreshSources() {
       const channelByKey = new Map();
       const channelByName = new Map();
       const insertChannel = db.prepare(`
-        INSERT INTO channels(tvg_id, name, logo, group_name, channel_number, channel_sort, stream_url, updated_at)
-        VALUES (@tvgId, @name, @logo, @groupName, @channelNumber, @channelSort, @streamUrl, @updatedAt)
+        INSERT INTO channels(tvg_id, name, logo, group_name, source_title, channel_number, channel_sort, stream_url, updated_at)
+        VALUES (@tvgId, @name, @logo, @groupName, @sourceTitle, @channelNumber, @channelSort, @streamUrl, @updatedAt)
         ON CONFLICT(tvg_id) DO UPDATE SET
           name = excluded.name,
           logo = excluded.logo,
           group_name = excluded.group_name,
+          source_title = excluded.source_title,
           channel_number = excluded.channel_number,
           channel_sort = excluded.channel_sort,
           stream_url = excluded.stream_url,

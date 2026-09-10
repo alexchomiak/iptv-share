@@ -437,6 +437,7 @@ function compactFootballField(payload = {}, drives = {}, competitors = [], teams
   const currentSpot = bestFootballCurrentSpot([liveSpot, currentDrive?.end, latestPlay?.end, currentDrive?.start, latestPlay?.start]);
   const ballPercent = footballFieldPercent(currentSpot, away, home, possessionTeam);
   const firstDownPercent = footballFirstDownPercent(currentSpot, possessionTeam, away, home);
+  const driveStartPercent = footballFieldPercent(currentDrive?.start, away, home, possessionTeam);
   const startPercent = footballFieldPercent(latestPlay?.start, away, home, possessionTeam);
   const endPercent = footballFieldPercent(latestPlay?.end, away, home, possessionTeam);
   const playKind = footballPlayKind(latestPlay);
@@ -461,6 +462,11 @@ function compactFootballField(payload = {}, drives = {}, competitors = [], teams
           percent: firstDownPercent,
           distance: footballDistanceToGain(currentSpot),
           goalToGo: footballIsGoalToGo(currentSpot),
+        }
+      : null,
+    driveStart: Number.isFinite(driveStartPercent)
+      ? {
+          percent: driveStartPercent,
         }
       : null,
     lastPlay: latestPlay

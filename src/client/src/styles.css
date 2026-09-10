@@ -2257,10 +2257,195 @@ h2 {
   gap: 3px;
 }
 
+.driveHeaderActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.driveHeaderActions button {
+  padding: 7px 10px;
+  border: 1px solid rgba(49, 196, 141, 0.42);
+  border-radius: 8px;
+  background: rgba(49, 196, 141, 0.1);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.driveHeaderActions button:hover {
+  border-color: rgba(49, 196, 141, 0.78);
+  background: rgba(49, 196, 141, 0.16);
+}
+
 .footballDrivePanel .sportsSubpanelHeader span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 750;
+}
+
+.footballDriveGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.32fr);
+  gap: 0;
+}
+
+.footballDriveMain {
+  min-width: 0;
+  border-right: 1px solid rgba(57, 68, 82, 0.64);
+}
+
+.footballDriveRail {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: 460px;
+  background: rgba(8, 13, 21, 0.12);
+}
+
+.driveRailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.56);
+}
+
+.driveRailHeader h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.driveRailHeader span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.driveRailList {
+  min-height: 0;
+  overflow: auto;
+}
+
+.driveRailGroup h5 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.5);
+  background: #121923;
+  color: rgba(213, 219, 230, 0.66);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.driveRailList button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.42);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.driveRailList button:hover,
+.driveRailList button.active {
+  background: rgba(49, 196, 141, 0.1);
+}
+
+.driveRailList img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+}
+
+.driveRailList b,
+.driveRailList strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.driveRailList small {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drivePlayFeed {
+  display: grid;
+  max-height: 320px;
+  overflow: auto;
+  border-top: 1px solid rgba(57, 68, 82, 0.64);
+}
+
+.drivePlayFeed .driveRailHeader {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #151b25;
+}
+
+.drivePlayFeed article {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.46);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.drivePlayFeed article:hover,
+.drivePlayFeed article.active {
+  background: rgba(49, 196, 141, 0.1);
+}
+
+.drivePlayFeed article.active {
+  box-shadow: inset 3px 0 0 rgba(49, 196, 141, 0.9);
+}
+
+.drivePlayFeed b {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drivePlayFeed span,
+.drivePlayFeed p {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.drivePlayFeed p {
+  margin: 5px 0 0;
+}
+
+.drivePlayFeed strong {
+  align-self: center;
+  color: var(--text);
+  font-size: 15px;
 }
 
 .driveLastPlay span {
@@ -2326,6 +2511,29 @@ h2 {
   opacity: 0.74;
   filter: drop-shadow(0 0 3px rgba(49, 196, 141, 0.24));
   vector-effect: non-scaling-stroke;
+}
+
+.footballDriveStartPath {
+  fill: none;
+  stroke: rgba(49, 196, 141, 0.82);
+  stroke-linecap: round;
+  stroke-width: 1.7;
+  opacity: 0.62;
+  filter: drop-shadow(0 0 3px rgba(49, 196, 141, 0.16));
+  vector-effect: non-scaling-stroke;
+}
+
+.footballDriveStartDot,
+.footballDriveCurrentDot {
+  fill: #101721;
+  stroke: rgba(49, 196, 141, 0.82);
+  stroke-width: 1.2;
+  opacity: 0.82;
+  vector-effect: non-scaling-stroke;
+}
+
+.footballDriveCurrentDot {
+  fill: #31c48d;
 }
 
 .footballFirstDownLine {
@@ -2480,10 +2688,45 @@ h2 {
   padding: 14px 14px 0;
 }
 
+.footballSnapshotGrid.single {
+  grid-template-columns: 1fr;
+}
+
 .leaderRows,
 .teamCompareRows,
 .injuryTeams {
   display: grid;
+}
+
+.teamCompareHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(57, 68, 82, 0.64);
+  background: rgba(8, 13, 21, 0.2);
+}
+
+.teamCompareHeader span {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(213, 219, 230, 0.78);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.teamCompareHeader span:last-child {
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.teamCompareHeader img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 .leaderRow {
@@ -2555,27 +2798,57 @@ h2 {
 
 .teamCompareRow {
   display: grid;
-  grid-template-columns: 96px minmax(110px, 1fr) 96px;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 8px;
+  padding: 13px 14px 12px;
   border-bottom: 1px solid rgba(57, 68, 82, 0.56);
+}
+
+.teamCompareValues {
+  display: grid;
+  grid-template-columns: 92px minmax(110px, 1fr) 92px;
+  align-items: end;
+  gap: 12px;
 }
 
 .teamCompareRow strong {
   color: var(--text);
   font-size: 18px;
+  line-height: 1;
 }
 
-.teamCompareRow strong:last-child {
+.teamCompareValues strong:last-child {
   text-align: right;
 }
 
-.teamCompareRow span {
+.teamCompareValues span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
   text-align: center;
+}
+
+.teamCompareTrack {
+  height: 8px;
+  display: flex;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(57, 68, 82, 0.42);
+}
+
+.teamCompareTrack i {
+  min-width: 3px;
+  display: block;
+  height: 100%;
+}
+
+.teamCompareTrack .away {
+  background:
+    repeating-linear-gradient(120deg, rgba(229, 234, 242, 0.82) 0 2px, rgba(229, 234, 242, 0.24) 2px 4px),
+    rgba(170, 179, 194, 0.42);
+}
+
+.teamCompareTrack .home {
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0.75), rgba(49, 196, 141, 0.86));
 }
 
 .footballExtras {
@@ -3320,6 +3593,7 @@ h2 {
   .footballBoxscore,
   .footballExtras,
   .footballSnapshotGrid,
+  .footballDriveGrid,
   .baseballScorecard,
   .baseballBoxscore,
   .programRow,
@@ -3426,6 +3700,15 @@ h2 {
     margin: 12px 12px 0;
   }
 
+  .footballDriveMain {
+    border-right: 0;
+    border-bottom: 1px solid rgba(57, 68, 82, 0.64);
+  }
+
+  .footballDriveRail {
+    max-height: 280px;
+  }
+
   .footballSnapshotGrid {
     padding: 12px 12px 0;
   }
@@ -3448,10 +3731,18 @@ h2 {
   }
 
   .leaderRow,
-  .teamCompareRow,
   .injuryRow {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .teamCompareValues {
+    grid-template-columns: 76px minmax(86px, 1fr) 76px;
+    gap: 8px;
+  }
+
+  .teamCompareHeader {
+    padding: 10px 12px;
   }
 
   .leaderSide,
@@ -3464,9 +3755,7 @@ h2 {
     order: 0;
   }
 
-  .leaderRow > b,
-  .teamCompareRow span,
-  .teamCompareRow strong:last-child {
+  .leaderRow > b {
     text-align: left;
   }
 

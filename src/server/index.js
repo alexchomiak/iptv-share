@@ -840,6 +840,7 @@ function ensureStaticSportsLiveFeed(event, reason = "viewer") {
 }
 
 let sportsTrackerTickRunning = false;
+const sportsWarmInFlight = new Set();
 
 function loadTrackableStaticSportsEvents() {
   const current = now();
@@ -886,6 +887,41 @@ async function runSportsTrackerTick() {
   } finally {
     sportsTrackerTickRunning = false;
   }
+}
+
+async function warmStaticSportsSnapshot(event, reason = "warm") {
+  if (!event?.static_share_id || !event?.id || !event?.espn_event_id) return null;
+  const league = normalizeEspnSnapshotLeague(event.espn_league || "nfl");
+  ensureStaticSportsLiveFeed(event, reason);
+  const latest = newestEspnSnapshot(event);
+  const freshnessSeconds = Math.min(espnSummaryRefreshSeconds(league), Math.max(15, espnFastcastRefreshSeconds(league) * 3));
+  if (latest && now() - Number(latest.fetched_at || 0) < freshnessSeconds) return latest;
+  const key = `static:${event.static_share_id}:event:${event.id}`;
+  if (sportsWarmInFlight.has(key)) return latest;
+  sportsWarmInFlight.add(key);
+  try {
+    const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
+    storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+    const payload = delayedSportsPayload("static", event.static_share_id, event.id, sportsUpdatePayload("static", event.static_share_id, event.id, {
+      summary: result.summary,
+      fetchedAt: result.fetchedAt,
+      source: result.source || result.summary?.source || "summary",
+    }));
+    if (payload) sendSportsPayload("static", event.static_share_id, payload);
+    return newestEspnSnapshot(event);
+  } catch (error) {
+    console.warn(`Sports warm-up failed for ${league}:${event.espn_event_id}: ${error.message}`);
+    return latest;
+  } finally {
+    sportsWarmInFlight.delete(key);
+  }
+}
+
+async function warmStaticShareSports(shareId, reason = "share-load") {
+  const events = candidateStaticEvents(shareId)
+    .filter((event) => event.espn_event_id && !event.espn_final_summary)
+    .slice(0, 3);
+  await Promise.all(events.map((event) => warmStaticSportsSnapshot(event, reason)));
 }
 
 function ensureSportsPushForSocket(ws, eventId, reason = "viewer", options = {}) {
@@ -1658,6 +1694,7 @@ function publicBaseUrl() {
 async function adminSafeStaticShare(share) {
   await finalizeCompletedStaticSportsEvents(share.id);
   const activeEvent = await findActiveStaticEvent(share.id);
+  await warmStaticShareSports(share.id, "admin-share-load");
   const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
   const { password_hash: _passwordHash, ...payload } = share;
@@ -1787,6 +1824,7 @@ app.get("/api/admin/share/:ref/sports-summary", requireAuth, async (req, res) =>
     return;
   }
   const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
+  await warmStaticSportsSnapshot(linkedEvent, "admin-summary");
   const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "admin");
   const realtime = fastcastIsReady(fastcastFeed);
   res.json(storedSportsSummaryResponse("static", resolved.share.id, linkedEvent.id, {
@@ -2540,6 +2578,7 @@ app.get("/api/public/share/:slug", async (req, res) => {
     const locked = !staticShareIsUnlocked(req, staticShare);
     if (!locked) await finalizeCompletedStaticSportsEvents(staticShare.id);
     const activeEvent = locked ? null : await findActiveStaticEvent(staticShare.id);
+    if (!locked) await warmStaticShareSports(staticShare.id, "public-share-load");
     const events = publicStaticEvents(staticShare);
     const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
     const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
@@ -2723,10 +2762,20 @@ app.get("/api/public/share/:slug/sports-summary", async (req, res) => {
     return;
   }
   const refreshSeconds = espnSummaryRefreshSeconds(linkedEvent.espn_league || "nfl");
-  if (actualStreamingCount("static", share.id) <= 0) {
+  const stored = storedSportsSummaryResponse("static", share.id, linkedEvent.id, {
+    refreshSeconds,
+    realtime: false,
+    realtimeStatus: null,
+  });
+  if (actualStreamingCount("static", share.id) <= 0 && !stored.summary) {
     res.json(skippedSportsSummaryResponse("static", share.id, refreshSeconds, "No active stream viewers"));
     return;
   }
+  if (actualStreamingCount("static", share.id) <= 0) {
+    res.json(stored);
+    return;
+  }
+  await warmStaticSportsSnapshot(linkedEvent, "public-summary");
   const fastcastFeed = ensureStaticSportsLiveFeed(linkedEvent, "public");
   const realtime = fastcastIsReady(fastcastFeed);
   res.json(storedSportsSummaryResponse("static", share.id, linkedEvent.id, {

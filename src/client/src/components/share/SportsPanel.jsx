@@ -64,60 +64,174 @@ function FootballPanel({ summary, hideScorecard = false }) {
 }
 
 function FootballDrivePanel({ summary, away, home }) {
-  const drive = summary?.drives?.current;
-  const latestPlay = drive?.plays?.at(-1) || summary?.recentPlays?.[0];
-  const spot = summary?.footballField?.ball || latestPlay?.end || drive?.end || drive?.start || latestPlay?.start;
-  if (!drive && !spot && !latestPlay && !summary?.footballField) return null;
-  const playAthletes = drivePlayAthletes(latestPlay);
-  const displayTeam = summary?.footballField?.possessionTeam || drive?.team;
+  const drives = footballDriveList(summary);
+  const fallbackPlay = summary?.recentPlays?.[0];
+  const [selectedDriveKey, setSelectedDriveKey] = useState("");
+  const [selectedPlayKey, setSelectedPlayKey] = useState("");
+  const activeDriveKey = selectedDriveKey && drives.some((entry) => entry.key === selectedDriveKey)
+    ? selectedDriveKey
+    : drives[0]?.key || "";
+  const selectedDriveEntry = drives.find((entry) => entry.key === activeDriveKey) || null;
+  const selectedDrive = selectedDriveEntry?.drive || null;
+  const drivePlays = selectedDrive?.plays || [];
+  const activePlayKey = selectedPlayKey && drivePlays.some((play) => footballPlayKey(play) === selectedPlayKey)
+    ? selectedPlayKey
+    : footballPlayKey(drivePlays.at(-1) || fallbackPlay);
+  const selectedPlay = drivePlays.find((play) => footballPlayKey(play) === activePlayKey) || drivePlays.at(-1) || fallbackPlay;
+  const fieldModel = selectedDriveEntry?.isCurrent
+    ? summary?.footballField
+    : buildFootballReplayField(selectedDrive, selectedPlay, away, home);
+  const spot = fieldModel?.ball || selectedPlay?.end || selectedDrive?.end || selectedDrive?.start || selectedPlay?.start;
+  const playAthletes = drivePlayAthletes(selectedPlay);
+  const displayTeam = fieldModel?.possessionTeam || selectedDrive?.team || selectedPlay?.team;
+  const title = selectedDriveEntry?.isCurrent ? "Current Drive" : "Drive Replay";
+  const driveResult = selectedDrive?.result || selectedDrive?.shortResult || "";
+  const groupedDrives = groupFootballDrives(drives);
+
+  useEffect(() => {
+    if (!activeDriveKey) return;
+    if (activeDriveKey !== selectedDriveKey) setSelectedDriveKey(activeDriveKey);
+  }, [activeDriveKey, selectedDriveKey]);
+
+  useEffect(() => {
+    if (!activePlayKey) return;
+    if (activePlayKey !== selectedPlayKey) setSelectedPlayKey(activePlayKey);
+  }, [activePlayKey, selectedPlayKey]);
+
+  if (!selectedDrive && !spot && !selectedPlay && !summary?.footballField) return null;
+
   return (
     <section className="sportsSubpanel footballDrivePanel">
       <div className="sportsSubpanelHeader">
         <div>
-          <h3>{drive?.result ? "Latest Drive" : "Current Drive"}</h3>
-          <span>{drive?.description || "Drive in progress"}</span>
+          <h3>{title}</h3>
+          <span>{selectedDrive?.description || driveResult || "Drive in progress"}</span>
         </div>
-        {displayTeam?.logo && <img src={displayTeam.logo} alt="" />}
+        <div className="driveHeaderActions">
+          {!selectedDriveEntry?.isCurrent && drives[0]?.key && (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedDriveKey(drives[0].key);
+                setSelectedPlayKey(footballPlayKey(drives[0].drive?.plays?.at(-1)));
+              }}
+            >
+              Live Drive
+            </button>
+          )}
+          {displayTeam?.logo && <img src={displayTeam.logo} alt="" />}
+        </div>
       </div>
-      <FootballField summary={summary} play={latestPlay} away={away} home={home} />
-      {latestPlay?.text && (
-        <div className="driveLastPlay">
-          <div>
-            <strong>{latestPlay.shortDescription || latestPlay.type || "Last Play"}</strong>
-            <small>{[spot?.downDistanceText || spot?.shortDownDistanceText, spot?.possessionText].filter(Boolean).join(" · ")}</small>
-          </div>
-          <span>{latestPlay.text}</span>
-          {playAthletes.length > 0 && (
-            <div className="drivePlayers">
-              {playAthletes.map((athlete) => (
-                <span key={`${latestPlay.id}-${athlete.id || athlete.name}-${athlete.role || ""}`}>
-                  {athlete.headshot && <img src={athlete.headshot} alt="" loading="lazy" />}
-                  <b>{athlete.shortName || athlete.name}</b>
-                  {athlete.role && <small>{formatPlayerRole(athlete.role)}</small>}
-                </span>
-              ))}
+      <div className="footballDriveGrid">
+        <div className="footballDriveMain">
+          <FootballField summary={summary} model={fieldModel} play={selectedPlay} away={away} home={home} />
+          {selectedPlay?.text && (
+            <div className="driveLastPlay">
+              <div>
+                <strong>{selectedPlay.shortDescription || selectedPlay.type || "Selected Play"}</strong>
+                <small>{[spot?.downDistanceText || spot?.shortDownDistanceText, spot?.possessionText, selectedPlay.clock].filter(Boolean).join(" · ")}</small>
+              </div>
+              <span>{selectedPlay.text}</span>
+              {playAthletes.length > 0 && (
+                <div className="drivePlayers">
+                  {playAthletes.map((athlete) => (
+                    <span key={`${selectedPlay.id}-${athlete.id || athlete.name}-${athlete.role || ""}`}>
+                      {athlete.headshot && <img src={athlete.headshot} alt="" loading="lazy" />}
+                      <b>{athlete.shortName || athlete.name}</b>
+                      {athlete.role && <small>{formatPlayerRole(athlete.role)}</small>}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           )}
+        </div>
+        {drives.length > 0 && (
+          <aside className="footballDriveRail">
+            <div className="driveRailHeader">
+              <h4>Drives</h4>
+              <span>{drives.length}</span>
+            </div>
+            <div className="driveRailList">
+              {groupedDrives.map((group) => (
+                <div className="driveRailGroup" key={group.label}>
+                  <h5>{group.label}</h5>
+                  {group.entries.map((entry) => (
+                    <button
+                      key={entry.key}
+                      className={entry.key === activeDriveKey ? "active" : ""}
+                      type="button"
+                      onClick={() => {
+                        setSelectedDriveKey(entry.key);
+                        setSelectedPlayKey(footballPlayKey(entry.drive?.plays?.at(-1)));
+                      }}
+                    >
+                      {entry.drive?.team?.logo && <img src={entry.drive.team.logo} alt="" />}
+                      <span>
+                        <b>{entry.isCurrent ? "Current Drive" : entry.drive?.result || "Drive"}</b>
+                        <small>{footballDriveMeta(entry.drive)}</small>
+                      </span>
+                      <strong>{footballDriveScore(entry.drive)}</strong>
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </aside>
+        )}
+      </div>
+      {drivePlays.length > 0 && (
+        <div className="drivePlayFeed">
+          <div className="driveRailHeader">
+            <h4>Drive Plays</h4>
+            <span>{drivePlays.length}</span>
+          </div>
+          {drivePlays.map((play, index) => (
+            <article
+              key={footballPlayKey(play) || index}
+              className={footballPlayKey(play) === activePlayKey ? "active" : ""}
+              role="button"
+              tabIndex={0}
+              onClick={() => setSelectedPlayKey(footballPlayKey(play))}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") setSelectedPlayKey(footballPlayKey(play));
+              }}
+            >
+              <div>
+                <header className="playRowHeader">
+                  <b>{play.shortDescription || play.type || `Play ${index + 1}`}</b>
+                  {play.wallclock && <time>{formatPlayTimestamp(play.wallclock)}</time>}
+                </header>
+                <span>{[play.clock, play.start?.downDistanceText || play.start?.shortDownDistanceText, play.start?.possessionText].filter(Boolean).join(" · ")}</span>
+                <p>{play.text}</p>
+              </div>
+              <strong>{play.awayScore ?? "-"}-{play.homeScore ?? "-"}</strong>
+            </article>
+          ))}
         </div>
       )}
     </section>
   );
 }
 
-function FootballField({ summary, play, away, home }) {
-  const model = summary?.footballField || {};
+function FootballField({ summary, model: fieldModel, play, away, home }) {
+  const model = fieldModel || summary?.footballField || {};
   const ball = model.ball || null;
   const possessionTeam = model.possessionTeam || play?.team || ball?.team || null;
   const possession = possessionTeam?.abbreviation || "";
   const possessionLogo = possessionTeam?.logo || "";
   const current = finiteNumber(ball?.percent);
   const firstDown = finiteNumber(model.firstDown?.percent);
+  const driveStart = finiteNumber(model.driveStart?.percent);
   const start = finiteNumber(model.lastPlay?.startPercent);
   const end = finiteNumber(model.lastPlay?.endPercent);
   const kind = model.lastPlay?.kind || "";
   const hasPath = Boolean(model.lastPlay?.showRoute) && Number.isFinite(start) && Number.isFinite(end);
   const visualMarker = Number.isFinite(current) ? fieldMarkerPercent(current) : null;
   const path = hasPath ? footballPlayPath(start, end, kind) : "";
+  const drivePath = Number.isFinite(driveStart) && Number.isFinite(current) && Math.abs(driveStart - current) > 0.5
+    ? `M ${driveStart.toFixed(1)} 45 L ${current.toFixed(1)} 45`
+    : "";
   const playSpotText = ball?.possessionText || ball?.downDistanceText || "";
   return (
     <div className="footballField" aria-label="Current drive field position">
@@ -126,6 +240,9 @@ function FootballField({ summary, play, away, home }) {
       </span>
       <div className="footballFieldSurface">
         <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-hidden="true">
+          {drivePath && <path d={drivePath} className="footballDriveStartPath" />}
+          {drivePath && <circle cx={driveStart} cy="45" r="1.2" className="footballDriveStartDot" />}
+          {drivePath && <circle cx={current} cy="45" r="1.5" className="footballDriveCurrentDot" />}
           {Number.isFinite(firstDown) && <line x1={firstDown} x2={firstDown} y1="4" y2="44" className="footballFirstDownLine" />}
           {hasPath && <path d={path} className={`footballFieldPath ${kind}`} />}
           {hasPath && <circle cx={start} cy={footballPathY(kind)} r="1.2" className="footballFieldDot start" />}
@@ -173,6 +290,164 @@ function finiteNumber(value) {
   return Number.isFinite(numeric) ? numeric : NaN;
 }
 
+function footballDriveList(summary) {
+  const current = summary?.drives?.current;
+  const currentId = String(current?.id || "");
+  const previous = (summary?.drives?.previous || []).filter((drive, index) => {
+    if (currentId && String(drive?.id || "") === currentId) return false;
+    return !current || index !== 0 || footballDriveMeta(drive) !== footballDriveMeta(current);
+  });
+  return [
+    ...(current ? [{ drive: current, isCurrent: true }] : []),
+    ...previous.map((drive) => ({ drive, isCurrent: false })),
+  ].filter((entry) => entry.drive).map((entry, index) => ({
+    ...entry,
+    key: `${entry.isCurrent ? "current" : "drive"}-${entry.drive.id || index}-${entry.drive.team?.id || entry.drive.team?.abbreviation || ""}`,
+  }));
+}
+
+function groupFootballDrives(drives = []) {
+  const groups = [];
+  for (const entry of drives) {
+    const label = entry.isCurrent ? "Live" : footballDrivePeriodLabel(entry.drive);
+    let group = groups.find((item) => item.label === label);
+    if (!group) {
+      group = { label, entries: [] };
+      groups.push(group);
+    }
+    group.entries.push(entry);
+  }
+  return groups;
+}
+
+function footballDrivePeriodLabel(drive = {}) {
+  const period = drive.plays?.[0]?.period || drive.plays?.at(-1)?.period || {};
+  const number = Number(period.number);
+  if (period.displayValue) return period.displayValue;
+  if (Number.isFinite(number)) return number <= 4 ? `${ordinal(number)} Quarter` : number === 5 ? "Overtime" : `${ordinal(number - 4)} Overtime`;
+  return "Earlier Drives";
+}
+
+function footballPlayKey(play) {
+  if (!play) return "";
+  return String(play.id || play.sequenceNumber || `${play.clock || ""}-${play.text || play.shortText || ""}`);
+}
+
+function footballDriveMeta(drive = {}) {
+  return [
+    drive.offensivePlays ? `${drive.offensivePlays} plays` : "",
+    drive.yards != null ? `${drive.yards} yards` : "",
+    drive.timeElapsed,
+  ].filter(Boolean).join(", ") || "Drive details";
+}
+
+function footballDriveScore(drive = {}) {
+  const lastPlay = drive.plays?.at(-1);
+  if (lastPlay?.awayScore != null || lastPlay?.homeScore != null) return `${lastPlay.awayScore ?? 0}-${lastPlay.homeScore ?? 0}`;
+  return "";
+}
+
+function buildFootballReplayField(drive = {}, play = {}, away, home) {
+  const possessionTeam = drive?.team || play?.team || null;
+  const ballSpot = play?.end || drive?.end || play?.start || drive?.start || null;
+  const driveStartPercent = footballFieldPercent(drive?.start, away, home, possessionTeam);
+  const ballPercent = footballFieldPercent(ballSpot, away, home, possessionTeam);
+  const startPercent = footballFieldPercent(play?.start, away, home, possessionTeam);
+  const endPercent = footballFieldPercent(play?.end, away, home, possessionTeam);
+  const firstDownPercent = footballFirstDownPercent(play?.start || ballSpot, possessionTeam, away, home);
+  const kind = footballPlayKind(play);
+  return {
+    possessionTeam,
+    ball: ballSpot && Number.isFinite(ballPercent) ? { ...ballSpot, percent: ballPercent } : null,
+    driveStart: Number.isFinite(driveStartPercent) ? { percent: driveStartPercent } : null,
+    firstDown: Number.isFinite(firstDownPercent) ? { percent: firstDownPercent } : null,
+    lastPlay: play
+      ? {
+          id: play.id || "",
+          kind,
+          startPercent,
+          endPercent,
+          showRoute: Boolean(kind) && Number.isFinite(startPercent) && Number.isFinite(endPercent) && Math.abs(startPercent - endPercent) > 0.5,
+        }
+      : null,
+  };
+}
+
+function footballFieldPercent(spot, away, home, possessionTeam) {
+  if (!spot) return null;
+  const parsed = parseFootballSpotText(spot.possessionText || spot.downDistanceText);
+  if (parsed?.yardLine === 50 && !parsed.team) return 50;
+  if (parsed?.team) {
+    const side = footballPossessionSide(parsed.team, away, home);
+    if (side === "away") return clampFieldPercent(parsed.yardLine);
+    if (side === "home") return clampFieldPercent(100 - parsed.yardLine);
+  }
+  const yardsToEndzone = Number(spot.yardsToEndzone);
+  const side = footballPossessionSide(possessionTeam || spot.team, away, home);
+  if (!Number.isFinite(yardsToEndzone) || !side) return null;
+  return clampFieldPercent(side === "away" ? 100 - yardsToEndzone : yardsToEndzone);
+}
+
+function footballFirstDownPercent(spot, possessionTeam, away, home) {
+  const ball = footballFieldPercent(spot, away, home, possessionTeam);
+  if (!Number.isFinite(ball)) return null;
+  const side = footballPossessionSide(possessionTeam || spot?.team, away, home);
+  if (!side) return null;
+  if (/&\s*goal\b/i.test(`${spot?.shortDownDistanceText || ""} ${spot?.downDistanceText || ""}`)) return side === "home" ? 0 : 100;
+  const parsed = parseFootballDownDistance(spot?.shortDownDistanceText || spot?.downDistanceText);
+  const distance = Number(spot?.distance ?? parsed.distance);
+  if (!Number.isFinite(distance) || distance <= 0) return null;
+  return clampFieldPercent(side === "home" ? ball - distance : ball + distance);
+}
+
+function footballPossessionSide(team, away, home) {
+  const id = String(team?.id || "");
+  const abbreviation = String(team?.abbreviation || "");
+  if (id && String(away?.team?.id || "") === id) return "away";
+  if (id && String(home?.team?.id || "") === id) return "home";
+  if (abbreviation && String(away?.team?.abbreviation || "") === abbreviation) return "away";
+  if (abbreviation && String(home?.team?.abbreviation || "") === abbreviation) return "home";
+  return "";
+}
+
+function parseFootballSpotText(value = "") {
+  const text = String(value || "").trim();
+  const atMatch = text.match(/\bat\s+([A-Z]{2,4})\s+(\d{1,2})\b/i);
+  const plainMatch = text.match(/^([A-Z]{2,4})\s+(\d{1,2})$/i);
+  const midfieldMatch = text.match(/\bat\s+(50)\b/i) || text.match(/^(50)$/);
+  const match = atMatch || plainMatch;
+  if (match) return { text: `${match[1].toUpperCase()} ${Number(match[2])}`, team: { abbreviation: match[1].toUpperCase() }, yardLine: Number(match[2]) };
+  if (midfieldMatch) return { text: "50", team: null, yardLine: 50 };
+  return null;
+}
+
+function parseFootballDownDistance(value = "") {
+  const text = String(value || "").trim();
+  const downMatch = text.match(/\b(1st|2nd|3rd|4th)\b/i);
+  const distanceMatch = text.match(/&\s*(\d{1,2}|goal)\b/i);
+  const downMap = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4 };
+  const distanceText = distanceMatch?.[1] || "";
+  return {
+    down: downMap[downMatch?.[1]?.toLowerCase()] || null,
+    distance: /^goal$/i.test(distanceText) ? null : Number(distanceText) || null,
+  };
+}
+
+function footballPlayKind(play = {}) {
+  const text = [play?.type, play?.shortDescription, play?.shortText, play?.text].filter(Boolean).join(" ").toLowerCase();
+  if (/timeout|end quarter|two-minute warning/.test(text)) return "";
+  if (/pass|reception|intercept/.test(text)) return "pass";
+  if (/punt|kick|field goal/.test(text)) return "kick";
+  if (/rush|run|sack|scramble/.test(text)) return "run";
+  return "";
+}
+
+function clampFieldPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, numeric));
+}
+
 function drivePlayAthletes(play) {
   const seen = new Set();
   return (play?.athletes || []).filter((athlete) => {
@@ -202,7 +477,7 @@ function FootballSnapshotGrid({ summary, away, home, teamTotals }) {
   const hasTeamStats = teamTotals.length >= 2;
   if (!hasLeaders && !hasTeamStats) return null;
   return (
-    <div className="footballSnapshotGrid">
+    <div className={`footballSnapshotGrid ${hasLeaders && hasTeamStats ? "" : "single"}`}>
       {hasLeaders && <FootballLeaders leaders={summary.leaders} away={away} home={home} />}
       {hasTeamStats && <FootballTeamStats teams={teamTotals} away={away} home={home} />}
     </div>
@@ -279,8 +554,18 @@ function FootballTeamStats({ teams, away, home }) {
       <div className="sportsSubpanelHeader">
         <h3>Team Stats</h3>
       </div>
+      <div className="teamCompareHeader">
+        <span>
+          {away?.team?.logo && <img src={away.team.logo} alt="" />}
+          <b>{away?.team?.abbreviation || away?.team?.name || "Away"}</b>
+        </span>
+        <span>
+          <b>{home?.team?.abbreviation || home?.team?.name || "Home"}</b>
+          {home?.team?.logo && <img src={home.team.logo} alt="" />}
+        </span>
+      </div>
       <div className="teamCompareRows">
-        {rows.map(([key, label]) => <TeamCompareRow key={key} label={label} away={awayStats.get(key)} home={homeStats.get(key)} />)}
+        {rows.map(([key, label]) => <TeamCompareRow key={key} statKey={key} label={label} away={awayStats.get(key)} home={homeStats.get(key)} />)}
       </div>
     </section>
   );
@@ -292,14 +577,40 @@ function teamStatMap(teams, competitor) {
   return new Map((team?.statistics || []).flatMap((group) => group.stats?.length ? group.stats : [group]).map((stat) => [stat.name, stat.displayValue ?? stat.value ?? "-"]));
 }
 
-function TeamCompareRow({ label, away, home }) {
+function TeamCompareRow({ label, away, home, statKey }) {
+  const awayValue = statCompareValue(away, statKey);
+  const homeValue = statCompareValue(home, statKey);
+  const total = Number(awayValue || 0) + Number(homeValue || 0);
+  const awayShare = total > 0 ? (Number(awayValue || 0) / total) * 100 : 50;
+  const homeShare = total > 0 ? (Number(homeValue || 0) / total) * 100 : 50;
   return (
     <div className="teamCompareRow">
-      <strong>{away ?? "-"}</strong>
-      <span>{label}</span>
-      <strong>{home ?? "-"}</strong>
+      <div className="teamCompareValues">
+        <strong>{away ?? "-"}</strong>
+        <span>{label}</span>
+        <strong>{home ?? "-"}</strong>
+      </div>
+      <div className="teamCompareTrack" aria-hidden="true">
+        <i className="away" style={{ width: `${awayShare}%` }} />
+        <i className="home" style={{ width: `${homeShare}%` }} />
+      </div>
     </div>
   );
+}
+
+function statCompareValue(value, key = "") {
+  if (value === null || value === undefined || value === "") return 0;
+  const text = String(value);
+  const timeMatch = text.match(/^(\d+):(\d{2})$/);
+  if (timeMatch) return Number(timeMatch[1]) * 60 + Number(timeMatch[2]);
+  const parts = text.match(/^(\d+)\s*[-/]\s*(\d+)$/);
+  if (parts) {
+    if (key === "penalties") return Number(parts[2]);
+    const attempts = Number(parts[2]);
+    return attempts > 0 ? Number(parts[1]) / attempts : Number(parts[1]);
+  }
+  const numeric = Number(text.replace(/[^\d.-]/g, ""));
+  return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
 }
 
 function FootballLineScore({ summary, away, home, periodLabels }) {

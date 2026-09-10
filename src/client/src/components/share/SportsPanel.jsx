@@ -66,6 +66,7 @@ function FootballPanel({ summary, hideScorecard = false }) {
 function FootballDrivePanel({ summary, away, home }) {
   const drives = footballDriveList(summary);
   const fallbackPlay = summary?.recentPlays?.[0];
+  const isCompleted = isFinalSummary(summary);
   const [selectedDriveKey, setSelectedDriveKey] = useState("");
   const [selectedPlayKey, setSelectedPlayKey] = useState("");
   const activeDriveKey = selectedDriveKey && drives.some((entry) => entry.key === selectedDriveKey)
@@ -74,19 +75,41 @@ function FootballDrivePanel({ summary, away, home }) {
   const selectedDriveEntry = drives.find((entry) => entry.key === activeDriveKey) || null;
   const selectedDrive = selectedDriveEntry?.drive || null;
   const drivePlays = selectedDrive?.plays || [];
+  const drivePlaysNewestFirst = [...drivePlays].reverse();
   const activePlayKey = selectedPlayKey && drivePlays.some((play) => footballPlayKey(play) === selectedPlayKey)
     ? selectedPlayKey
     : footballPlayKey(drivePlays.at(-1) || fallbackPlay);
   const selectedPlay = drivePlays.find((play) => footballPlayKey(play) === activePlayKey) || drivePlays.at(-1) || fallbackPlay;
+  const computedFieldModel = buildFootballReplayField(selectedDrive, selectedPlay, away, home);
   const fieldModel = selectedDriveEntry?.isCurrent
-    ? summary?.footballField
-    : buildFootballReplayField(selectedDrive, selectedPlay, away, home);
+    ? computedFieldModel || summary?.footballField
+    : computedFieldModel;
   const spot = fieldModel?.ball || selectedPlay?.end || selectedDrive?.end || selectedDrive?.start || selectedPlay?.start;
   const playAthletes = drivePlayAthletes(selectedPlay);
   const displayTeam = fieldModel?.possessionTeam || selectedDrive?.team || selectedPlay?.team;
-  const title = selectedDriveEntry?.isCurrent ? "Current Drive" : "Drive Replay";
+  const isLiveDrive = Boolean(selectedDriveEntry?.isCurrent && !isCompleted);
+  const title = isLiveDrive ? "Current Drive" : isCompleted && activeDriveKey === drives[0]?.key ? "Final Drive" : "Drive Replay";
   const driveResult = selectedDrive?.result || selectedDrive?.shortResult || "";
   const groupedDrives = groupFootballDrives(drives);
+  const liveDriveKey = !isCompleted && drives[0]?.isCurrent ? drives[0].key : "";
+  const currentLatestPlayKey = liveDriveKey ? footballPlayKey(drives[0]?.drive?.plays?.at(-1) || fallbackPlay) : "";
+  const showLiveButton = Boolean(liveDriveKey && (activeDriveKey !== liveDriveKey || selectedPlayKey));
+  const returnToLiveDrive = () => {
+    if (liveDriveKey) setSelectedDriveKey(liveDriveKey);
+    setSelectedPlayKey("");
+  };
+  const selectDrive = (entry) => {
+    setSelectedDriveKey(entry.key);
+    setSelectedPlayKey(entry.isCurrent ? "" : footballPlayKey(entry.drive?.plays?.at(-1)));
+  };
+  const selectDrivePlay = (play) => {
+    const key = footballPlayKey(play);
+    if (isLiveDrive && key && key === currentLatestPlayKey) {
+      returnToLiveDrive();
+      return;
+    }
+    setSelectedPlayKey(key);
+  };
 
   useEffect(() => {
     if (!activeDriveKey) return;
@@ -94,9 +117,9 @@ function FootballDrivePanel({ summary, away, home }) {
   }, [activeDriveKey, selectedDriveKey]);
 
   useEffect(() => {
-    if (!activePlayKey) return;
-    if (activePlayKey !== selectedPlayKey) setSelectedPlayKey(activePlayKey);
-  }, [activePlayKey, selectedPlayKey]);
+    if (!selectedPlayKey) return;
+    if (!drivePlays.some((play) => footballPlayKey(play) === selectedPlayKey)) setSelectedPlayKey("");
+  }, [activeDriveKey, drivePlays.length, selectedPlayKey]);
 
   if (!selectedDrive && !spot && !selectedPlay && !summary?.footballField) return null;
 
@@ -108,13 +131,10 @@ function FootballDrivePanel({ summary, away, home }) {
           <span>{selectedDrive?.description || driveResult || "Drive in progress"}</span>
         </div>
         <div className="driveHeaderActions">
-          {!selectedDriveEntry?.isCurrent && drives[0]?.key && (
+          {showLiveButton && (
             <button
               type="button"
-              onClick={() => {
-                setSelectedDriveKey(drives[0].key);
-                setSelectedPlayKey(footballPlayKey(drives[0].drive?.plays?.at(-1)));
-              }}
+              onClick={returnToLiveDrive}
             >
               Live Drive
             </button>
@@ -161,10 +181,7 @@ function FootballDrivePanel({ summary, away, home }) {
                       key={entry.key}
                       className={entry.key === activeDriveKey ? "active" : ""}
                       type="button"
-                      onClick={() => {
-                        setSelectedDriveKey(entry.key);
-                        setSelectedPlayKey(footballPlayKey(entry.drive?.plays?.at(-1)));
-                      }}
+                      onClick={() => selectDrive(entry)}
                     >
                       {entry.drive?.team?.logo && <img src={entry.drive.team.logo} alt="" />}
                       <span>
@@ -186,20 +203,23 @@ function FootballDrivePanel({ summary, away, home }) {
             <h4>Drive Plays</h4>
             <span>{drivePlays.length}</span>
           </div>
-          {drivePlays.map((play, index) => (
+          {drivePlaysNewestFirst.map((play, index) => (
             <article
               key={footballPlayKey(play) || index}
               className={footballPlayKey(play) === activePlayKey ? "active" : ""}
               role="button"
               tabIndex={0}
-              onClick={() => setSelectedPlayKey(footballPlayKey(play))}
+              onClick={() => selectDrivePlay(play)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") setSelectedPlayKey(footballPlayKey(play));
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  selectDrivePlay(play);
+                }
               }}
             >
               <div>
                 <header className="playRowHeader">
-                  <b>{play.shortDescription || play.type || `Play ${index + 1}`}</b>
+                  <b>{play.shortDescription || play.type || `Play ${drivePlays.length - index}`}</b>
                   {play.wallclock && <time>{formatPlayTimestamp(play.wallclock)}</time>}
                 </header>
                 <span>{[play.clock, play.start?.downDistanceText || play.start?.shortDownDistanceText, play.start?.possessionText].filter(Boolean).join(" · ")}</span>
@@ -291,12 +311,17 @@ function finiteNumber(value) {
 }
 
 function footballDriveList(summary) {
-  const current = summary?.drives?.current;
+  const isCompleted = isFinalSummary(summary);
+  const rawCurrent = summary?.drives?.current;
+  const current = isCompleted ? null : rawCurrent;
   const currentId = String(current?.id || "");
-  const previous = (summary?.drives?.previous || []).filter((drive, index) => {
+  const previous = [...(summary?.drives?.previous || [])].filter((drive, index) => {
     if (currentId && String(drive?.id || "") === currentId) return false;
     return !current || index !== 0 || footballDriveMeta(drive) !== footballDriveMeta(current);
   });
+  if (isCompleted && footballDriveHasContent(rawCurrent) && !previous.some((drive) => footballDriveSameDrive(drive, rawCurrent))) {
+    previous.unshift(rawCurrent);
+  }
   return [
     ...(current ? [{ drive: current, isCurrent: true }] : []),
     ...previous.map((drive) => ({ drive, isCurrent: false })),
@@ -304,6 +329,18 @@ function footballDriveList(summary) {
     ...entry,
     key: `${entry.isCurrent ? "current" : "drive"}-${entry.drive.id || index}-${entry.drive.team?.id || entry.drive.team?.abbreviation || ""}`,
   }));
+}
+
+function footballDriveHasContent(drive = {}) {
+  return Boolean(drive?.id || drive?.plays?.length || drive?.start || drive?.end || drive?.result || drive?.shortResult);
+}
+
+function footballDriveSameDrive(left = {}, right = {}) {
+  if (!left || !right) return false;
+  if (left.id && right.id) return String(left.id) === String(right.id);
+  return footballDriveMeta(left) === footballDriveMeta(right)
+    && footballDriveScore(left) === footballDriveScore(right)
+    && (left.result || left.shortResult || "") === (right.result || right.shortResult || "");
 }
 
 function groupFootballDrives(drives = []) {
@@ -350,14 +387,27 @@ function footballDriveScore(drive = {}) {
 function buildFootballReplayField(drive = {}, play = {}, away, home) {
   const possessionTeam = drive?.team || play?.team || null;
   const ballSpot = play?.end || drive?.end || play?.start || drive?.start || null;
-  const driveStartPercent = footballFieldPercent(drive?.start, away, home, possessionTeam);
-  const ballPercent = footballFieldPercent(ballSpot, away, home, possessionTeam);
-  const startPercent = footballFieldPercent(play?.start, away, home, possessionTeam);
-  const endPercent = footballFieldPercent(play?.end, away, home, possessionTeam);
-  const firstDownPercent = footballFirstDownPercent(play?.start || ballSpot, possessionTeam, away, home);
+  const driveStartSpot = drive?.plays?.[0]?.start || drive?.start;
+  const fieldFlip = footballFieldShouldFlip(driveStartSpot, ballSpot, away, home, possessionTeam);
+  const driveStartPercent = footballFieldPercent(driveStartSpot, away, home, possessionTeam, fieldFlip);
+  const ballPercent = footballFieldPercent(ballSpot, away, home, possessionTeam, fieldFlip);
+  const startPercent = footballFieldPercent(play?.start, away, home, possessionTeam, fieldFlip);
+  const endPercent = footballFieldPercent(play?.end, away, home, possessionTeam, fieldFlip);
+  const direction = footballDriveDirection({
+    possessionTeam,
+    away,
+    home,
+    ballPercent,
+    driveStartPercent,
+    startPercent,
+    endPercent,
+  });
+  const firstDownPercent = footballFirstDownPercent(play?.start || ballSpot, possessionTeam, away, home, direction, fieldFlip);
   const kind = footballPlayKind(play);
   return {
     possessionTeam,
+    direction,
+    fieldFlip,
     ball: ballSpot && Number.isFinite(ballPercent) ? { ...ballSpot, percent: ballPercent } : null,
     driveStart: Number.isFinite(driveStartPercent) ? { percent: driveStartPercent } : null,
     firstDown: Number.isFinite(firstDownPercent) ? { percent: firstDownPercent } : null,
@@ -373,7 +423,13 @@ function buildFootballReplayField(drive = {}, play = {}, away, home) {
   };
 }
 
-function footballFieldPercent(spot, away, home, possessionTeam) {
+function footballFieldPercent(spot, away, home, possessionTeam, flip = false) {
+  const percent = footballFieldBasePercent(spot, away, home, possessionTeam);
+  if (!Number.isFinite(percent)) return percent;
+  return flip ? clampFieldPercent(100 - percent) : percent;
+}
+
+function footballFieldBasePercent(spot, away, home, possessionTeam) {
   if (!spot) return null;
   const parsed = parseFootballSpotText(spot.possessionText || spot.downDistanceText);
   if (parsed?.yardLine === 50 && !parsed.team) return 50;
@@ -388,16 +444,45 @@ function footballFieldPercent(spot, away, home, possessionTeam) {
   return clampFieldPercent(side === "away" ? 100 - yardsToEndzone : yardsToEndzone);
 }
 
-function footballFirstDownPercent(spot, possessionTeam, away, home) {
-  const ball = footballFieldPercent(spot, away, home, possessionTeam);
+function footballFieldShouldFlip(startSpot, currentSpot, away, home, possessionTeam) {
+  const startYardsToEndzone = Number(startSpot?.yardsToEndzone);
+  const currentYardsToEndzone = Number(currentSpot?.yardsToEndzone);
+  const startPercent = footballFieldBasePercent(startSpot, away, home, possessionTeam);
+  const currentPercent = footballFieldBasePercent(currentSpot, away, home, possessionTeam);
+  if (
+    !Number.isFinite(startYardsToEndzone) ||
+    !Number.isFinite(currentYardsToEndzone) ||
+    !Number.isFinite(startPercent) ||
+    !Number.isFinite(currentPercent)
+  ) {
+    return false;
+  }
+  const yardsDelta = currentYardsToEndzone - startYardsToEndzone;
+  const percentDelta = currentPercent - startPercent;
+  if (Math.abs(yardsDelta) <= 0.5 || Math.abs(percentDelta) <= 0.5) return false;
+  return Math.sign(yardsDelta) !== Math.sign(percentDelta);
+}
+
+function footballFirstDownPercent(spot, possessionTeam, away, home, direction = "", flip = false) {
+  const ball = footballFieldPercent(spot, away, home, possessionTeam, flip);
   if (!Number.isFinite(ball)) return null;
-  const side = footballPossessionSide(possessionTeam || spot?.team, away, home);
-  if (!side) return null;
-  if (/&\s*goal\b/i.test(`${spot?.shortDownDistanceText || ""} ${spot?.downDistanceText || ""}`)) return side === "home" ? 0 : 100;
+  const driveDirection = direction || (footballPossessionSide(possessionTeam || spot?.team, away, home) === "home" ? "left" : "right");
+  if (!driveDirection) return null;
+  if (/&\s*goal\b/i.test(`${spot?.shortDownDistanceText || ""} ${spot?.downDistanceText || ""}`)) return driveDirection === "left" ? 0 : 100;
   const parsed = parseFootballDownDistance(spot?.shortDownDistanceText || spot?.downDistanceText);
   const distance = Number(spot?.distance ?? parsed.distance);
   if (!Number.isFinite(distance) || distance <= 0) return null;
-  return clampFieldPercent(side === "home" ? ball - distance : ball + distance);
+  return clampFieldPercent(driveDirection === "left" ? ball - distance : ball + distance);
+}
+
+function footballDriveDirection({ possessionTeam, away, home, ballPercent, driveStartPercent, startPercent, endPercent } = {}) {
+  if (Number.isFinite(driveStartPercent) && Number.isFinite(ballPercent) && Math.abs(ballPercent - driveStartPercent) > 0.5) {
+    return ballPercent > driveStartPercent ? "right" : "left";
+  }
+  if (Number.isFinite(startPercent) && Number.isFinite(endPercent) && Math.abs(endPercent - startPercent) > 0.5) {
+    return endPercent > startPercent ? "right" : "left";
+  }
+  return footballPossessionSide(possessionTeam, away, home) === "home" ? "left" : "right";
 }
 
 function footballPossessionSide(team, away, home) {

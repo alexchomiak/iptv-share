@@ -1153,7 +1153,7 @@ async function resolveScheduledStreamEntitlement(event) {
   if (!scheduledItemHasSportsLink(event)) {
     return { event, streamable: epgEventIsStreamable(event), source: "epg", usesSportsClock: false };
   }
-  if (now() < event.starts_at - config.streamGraceSeconds) {
+  if (event.program_id && now() < event.starts_at - config.streamGraceSeconds) {
     return { event, streamable: false, source: "epg-before-start", usesSportsClock: false };
   }
   try {
@@ -1938,6 +1938,13 @@ function normalizeSportsLink(value = {}) {
   };
 }
 
+function defaultSportsDurationSeconds(league = "") {
+  const key = String(league || "").toLowerCase();
+  if (key === "mlb") return 4 * 60 * 60;
+  if (key === "nba" || key === "ncaamb") return 3 * 60 * 60;
+  return 4 * 60 * 60;
+}
+
 function sportsSummaryIsFinal(summary) {
   return Boolean(summary?.completed)
     || String(summary?.state || "").toLowerCase() === "post"
@@ -2401,6 +2408,7 @@ app.post("/api/static-shares/:id/events", requireAuth, (req, res) => {
     endsAt = 0,
     espn = null,
   } = req.body || {};
+  const sports = normalizeSportsLink(espn);
 
   if (programId) {
     const program = db.prepare("SELECT * FROM epg_programs WHERE id = ?").get(programId);
@@ -2416,12 +2424,19 @@ app.post("/api/static-shares/:id/events", requireAuth, (req, res) => {
     endsAt ||= program.end_at;
   }
 
+  if (!programId && sports.eventId) {
+    const sportsStartAt = Math.floor(Date.parse(sports.date || "") / 1000);
+    title ||= sports.name || sports.shortName || "Sports Event";
+    description ||= [sports.awayName && sports.homeName ? `${sports.awayName} at ${sports.homeName}` : "", sports.status].filter(Boolean).join(" · ");
+    if (!Number(startsAt) && Number.isFinite(sportsStartAt)) startsAt = sportsStartAt;
+    if (!Number(endsAt) && Number(startsAt)) endsAt = Number(startsAt) + defaultSportsDurationSeconds(sports.league);
+  }
+
   if (!Number(channelId) || !String(title).trim() || !Number(startsAt) || !Number(endsAt) || Number(endsAt) <= Number(startsAt)) {
-    res.status(400).json({ error: "Pick a channel, title, and valid event time" });
+    res.status(400).json({ error: "Pick a channel, title, and valid event time. For sports-only schedule items, select an ESPN game." });
     return;
   }
 
-  const sports = normalizeSportsLink(espn);
   const result = db
     .prepare(
       `

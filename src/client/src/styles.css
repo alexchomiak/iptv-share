@@ -2301,7 +2301,7 @@ h2 {
   min-width: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  max-height: 460px;
+  max-height: 320px;
   background: rgba(8, 13, 21, 0.12);
 }
 
@@ -2457,7 +2457,7 @@ h2 {
   grid-template-columns: 62px minmax(0, 1fr) 62px;
   align-items: center;
   gap: 12px;
-  padding: 16px 18px 12px;
+  padding: 14px 18px 10px;
 }
 
 .footballFieldEndzone {
@@ -2478,7 +2478,7 @@ h2 {
 }
 
 .footballFieldSurface {
-  height: 112px;
+  height: 104px;
   display: grid;
   grid-template-columns: repeat(9, 1fr);
   align-items: end;
@@ -2618,7 +2618,7 @@ h2 {
 .driveLastPlay {
   display: grid;
   gap: 10px;
-  padding: 0 18px 16px;
+  padding: 0 18px 12px;
 }
 
 .driveLastPlay strong {

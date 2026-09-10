@@ -422,7 +422,6 @@ function compactFootballDrives(payload = {}, athletesById = new Map(), teamsById
   const previous = asList(payload.drives?.previous)
     .map((drive) => compactDrive(drive, playsById, teamsById, athletesById))
     .filter(Boolean)
-    .slice(-12)
     .reverse();
   return { current, previous };
 }
@@ -435,11 +434,22 @@ function compactFootballField(payload = {}, drives = {}, competitors = [], teams
   const possessionTeam = resolveFootballPossessionTeam(payload, currentDrive, latestPlay, teamsById);
   const liveSpot = compactFootballLiveSpot(payload, teamsById);
   const currentSpot = bestFootballCurrentSpot([liveSpot, currentDrive?.end, latestPlay?.end, currentDrive?.start, latestPlay?.start]);
-  const ballPercent = footballFieldPercent(currentSpot, away, home, possessionTeam);
-  const firstDownPercent = footballFirstDownPercent(currentSpot, possessionTeam, away, home);
-  const driveStartPercent = footballFieldPercent(currentDrive?.start, away, home, possessionTeam);
-  const startPercent = footballFieldPercent(latestPlay?.start, away, home, possessionTeam);
-  const endPercent = footballFieldPercent(latestPlay?.end, away, home, possessionTeam);
+  const driveStartSpot = currentDrive?.plays?.[0]?.start || currentDrive?.start;
+  const fieldFlip = footballFieldShouldFlip(driveStartSpot, currentSpot, away, home, possessionTeam);
+  const ballPercent = footballFieldPercent(currentSpot, away, home, possessionTeam, fieldFlip);
+  const driveStartPercent = footballFieldPercent(driveStartSpot, away, home, possessionTeam, fieldFlip);
+  const startPercent = footballFieldPercent(latestPlay?.start, away, home, possessionTeam, fieldFlip);
+  const endPercent = footballFieldPercent(latestPlay?.end, away, home, possessionTeam, fieldFlip);
+  const direction = footballDriveDirection({
+    possessionTeam,
+    away,
+    home,
+    ballPercent,
+    driveStartPercent,
+    startPercent,
+    endPercent,
+  });
+  const firstDownPercent = footballFirstDownPercent(currentSpot, possessionTeam, away, home, direction, fieldFlip);
   const playKind = footballPlayKind(latestPlay);
   const showRoute =
     Boolean(playKind) &&
@@ -450,7 +460,8 @@ function compactFootballField(payload = {}, drives = {}, competitors = [], teams
     Math.abs(endPercent - ballPercent) <= 1.5;
   return {
     possessionTeam,
-    direction: footballPossessionSide(possessionTeam, away, home) === "home" ? "left" : "right",
+    direction,
+    fieldFlip,
     ball: currentSpot
       ? {
           ...currentSpot,
@@ -540,7 +551,13 @@ function parseFootballDownDistance(value = "") {
   };
 }
 
-function footballFieldPercent(spot, away, home, possessionTeam) {
+function footballFieldPercent(spot, away, home, possessionTeam, flip = false) {
+  const percent = footballFieldBasePercent(spot, away, home, possessionTeam);
+  if (!Number.isFinite(percent)) return percent;
+  return flip ? clampFieldPercent(100 - percent) : percent;
+}
+
+function footballFieldBasePercent(spot, away, home, possessionTeam) {
   if (!spot) return null;
   const parsed = parseFootballSpotText(spot.possessionText || spot.downDistanceText);
   if (parsed?.yardLine === 50 && !parsed.team) return 50;
@@ -555,15 +572,44 @@ function footballFieldPercent(spot, away, home, possessionTeam) {
   return clampFieldPercent(side === "away" ? 100 - yardsToEndzone : yardsToEndzone);
 }
 
-function footballFirstDownPercent(spot, possessionTeam, away, home) {
-  const ball = footballFieldPercent(spot, away, home, possessionTeam);
+function footballFieldShouldFlip(startSpot, currentSpot, away, home, possessionTeam) {
+  const startYardsToEndzone = Number(startSpot?.yardsToEndzone);
+  const currentYardsToEndzone = Number(currentSpot?.yardsToEndzone);
+  const startPercent = footballFieldBasePercent(startSpot, away, home, possessionTeam);
+  const currentPercent = footballFieldBasePercent(currentSpot, away, home, possessionTeam);
+  if (
+    !Number.isFinite(startYardsToEndzone) ||
+    !Number.isFinite(currentYardsToEndzone) ||
+    !Number.isFinite(startPercent) ||
+    !Number.isFinite(currentPercent)
+  ) {
+    return false;
+  }
+  const yardsDelta = currentYardsToEndzone - startYardsToEndzone;
+  const percentDelta = currentPercent - startPercent;
+  if (Math.abs(yardsDelta) <= 0.5 || Math.abs(percentDelta) <= 0.5) return false;
+  return Math.sign(yardsDelta) !== Math.sign(percentDelta);
+}
+
+function footballFirstDownPercent(spot, possessionTeam, away, home, direction = "", flip = false) {
+  const ball = footballFieldPercent(spot, away, home, possessionTeam, flip);
   if (!Number.isFinite(ball)) return null;
-  const side = footballPossessionSide(possessionTeam || spot?.team, away, home);
-  if (!side) return null;
-  if (footballIsGoalToGo(spot)) return side === "home" ? 0 : 100;
+  const driveDirection = direction || (footballPossessionSide(possessionTeam || spot?.team, away, home) === "home" ? "left" : "right");
+  if (!driveDirection) return null;
+  if (footballIsGoalToGo(spot)) return driveDirection === "left" ? 0 : 100;
   const distance = footballDistanceToGain(spot);
   if (!Number.isFinite(distance) || distance <= 0) return null;
-  return clampFieldPercent(side === "home" ? ball - distance : ball + distance);
+  return clampFieldPercent(driveDirection === "left" ? ball - distance : ball + distance);
+}
+
+function footballDriveDirection({ possessionTeam, away, home, ballPercent, driveStartPercent, startPercent, endPercent } = {}) {
+  if (Number.isFinite(driveStartPercent) && Number.isFinite(ballPercent) && Math.abs(ballPercent - driveStartPercent) > 0.5) {
+    return ballPercent > driveStartPercent ? "right" : "left";
+  }
+  if (Number.isFinite(startPercent) && Number.isFinite(endPercent) && Math.abs(endPercent - startPercent) > 0.5) {
+    return endPercent > startPercent ? "right" : "left";
+  }
+  return footballPossessionSide(possessionTeam, away, home) === "home" ? "left" : "right";
 }
 
 function footballDistanceToGain(spot = {}) {

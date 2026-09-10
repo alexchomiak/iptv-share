@@ -5,6 +5,13 @@ import { eventEnd, eventStart, formatDateTime, fromLocalInput, toLocalInput } fr
 import EventPeek from "./EventPeek.jsx";
 import GuideGrid from "./GuideGrid.jsx";
 
+function sportsDurationSeconds(league = "") {
+  const key = String(league || "").toLowerCase();
+  if (key === "mlb") return 4 * 60 * 60;
+  if (key === "nba" || key === "ncaamb") return 3 * 60 * 60;
+  return 4 * 60 * 60;
+}
+
 function AppGuide() {
   const initialStart = useMemo(() => toLocalInput(new Date(Date.now() - 30 * 60 * 1000)), []);
   const initialEnd = useMemo(() => toLocalInput(new Date(Date.now() + 8 * 60 * 60 * 1000)), []);
@@ -151,9 +158,34 @@ function AppGuide() {
   }
 
   async function addToStaticSchedule(targetShare) {
-    if (!targetShare?.id || selectedPrograms.length === 0) {
-      setShareResult("Select one or more EPG events and a static share first.");
+    const selectedChannel = channels.find((channel) => channel.id === selectedChannelId);
+    if (!targetShare?.id || (!selectedPrograms.length && !selectedChannel)) {
+      setShareResult("Select one or more EPG events, or select a channel and ESPN game.");
       return;
+    }
+    if (!selectedPrograms.length) {
+      if (!selectedEspn) {
+        setShareResult("Select an ESPN game for channel-only sports schedule items.");
+        return;
+      }
+      const sportsStartAt = Math.floor(Date.parse(selectedEspn.date || "") / 1000) || fromLocalInput(rangeStart);
+      const response = await api(`/api/static-shares/${targetShare.id}/events`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          channelId: selectedChannel.id,
+          title: selectedEspn.name || selectedEspn.shortName || "Sports Event",
+          description: selectedEspn.shortName ? `Linked ESPN game: ${selectedEspn.shortName}` : "",
+          startsAt: sportsStartAt,
+          endsAt: sportsStartAt + sportsDurationSeconds(espnLeague),
+          espn: selectedEspn,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json();
+        setShareResult(payload.error || "Could not add sports event to schedule.");
+        return;
+      }
     }
     for (const program of selectedPrograms) {
       const response = await api(`/api/static-shares/${targetShare.id}/events`, {
@@ -176,8 +208,8 @@ function AppGuide() {
     setEspnSearching(true);
     setEspnCache(null);
     try {
-      const start = selectedPrograms[0] ? eventStart(selectedPrograms[0]) - 7 * 24 * 60 * 60 : Math.floor(Date.now() / 1000);
-      const end = selectedPrograms.at(-1) ? eventEnd(selectedPrograms.at(-1)) + 21 * 24 * 60 * 60 : start + 28 * 24 * 60 * 60;
+      const start = selectedPrograms[0] ? eventStart(selectedPrograms[0]) - 7 * 24 * 60 * 60 : fromLocalInput(rangeStart) - 7 * 24 * 60 * 60;
+      const end = selectedPrograms.at(-1) ? eventEnd(selectedPrograms.at(-1)) + 21 * 24 * 60 * 60 : fromLocalInput(rangeEnd) + 21 * 24 * 60 * 60;
       const response = await api(
         `/api/sports/espn/search?league=${encodeURIComponent(espnLeague)}&q=${encodeURIComponent(espnQuery)}&start=${start}&end=${end}`,
       );
@@ -345,9 +377,9 @@ function AppGuide() {
               setScheduleProgram(null);
               setShareResult("");
             }}>Clear</button>
-            <button type="button" disabled={!selectedProgramIds.size} onClick={async () => {
+            <button type="button" disabled={!selectedProgramIds.size && !selectedChannelId} onClick={async () => {
               await loadStaticShares();
-              setEspnQuery(selectedPrograms[0]?.title || "");
+              setEspnQuery(selectedPrograms[0]?.title || channels.find((channel) => channel.id === selectedChannelId)?.name || "");
               setEspnGames([]);
               setSelectedEspn(null);
               setEspnCache(null);
@@ -389,10 +421,12 @@ function AppGuide() {
             </div>
             <section className="schedulePickerSports">
               <div className="selectedEventCard">
-                <span>Selected EPG Event{selectedPrograms.length === 1 ? "" : "s"}</span>
-                <strong>{selectedPrograms.map((program) => program.title).join(", ")}</strong>
+                <span>{selectedPrograms.length ? `Selected EPG Event${selectedPrograms.length === 1 ? "" : "s"}` : "Selected Channel"}</span>
+                <strong>{selectedPrograms.length ? selectedPrograms.map((program) => program.title).join(", ") : channels.find((channel) => channel.id === selectedChannelId)?.name || "No channel selected"}</strong>
                 <p>
-                  {selectedPrograms[0]?.channel_name || "Channel"} · {selectedPrograms.length} event{selectedPrograms.length === 1 ? "" : "s"} selected
+                  {selectedPrograms.length
+                    ? `${selectedPrograms[0]?.channel_name || "Channel"} · ${selectedPrograms.length} event${selectedPrograms.length === 1 ? "" : "s"} selected`
+                    : "Sports-only schedule item: ESPN controls the live window, this channel supplies the stream."}
                 </p>
               </div>
               <div className="sportsSearch">

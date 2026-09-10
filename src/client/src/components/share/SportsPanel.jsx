@@ -25,6 +25,7 @@ function useRelativeTimeTick() {
 
 function FootballPanel({ summary, hideScorecard = false }) {
   const playerGroups = summary?.boxscore?.players || [];
+  const teamTotals = summary?.boxscore?.teams || [];
   const competitors = [...(summary?.competitors || [])].sort((a, b) => {
     if (a.homeAway === b.homeAway) return 0;
     return a.homeAway === "away" ? -1 : 1;
@@ -45,7 +46,9 @@ function FootballPanel({ summary, hideScorecard = false }) {
         </div>
       )}
       <RefreshNote seconds={summary.refreshSeconds} fetchedAt={summary.fetchedAt} spoilerDelaySeconds={summary.spoilerDelaySeconds} />
+      <FootballDrivePanel summary={summary} away={away} home={home} />
       <WinProbabilityPanel summary={summary} away={away} home={home} />
+      <FootballSnapshotGrid summary={summary} away={away} home={home} teamTotals={teamTotals} />
       {playerGroups.length > 0 && (
         <div className="footballBoxscore">
           {[away, home].filter(Boolean).map((entry) => {
@@ -55,11 +58,257 @@ function FootballPanel({ summary, hideScorecard = false }) {
           })}
         </div>
       )}
+      <FootballExtras summary={summary} away={away} home={home} />
     </section>
   );
 }
 
+function FootballDrivePanel({ summary, away, home }) {
+  const drive = summary?.drives?.current;
+  const latestPlay = drive?.plays?.at(-1) || summary?.recentPlays?.[0];
+  const spot = summary?.footballField?.ball || latestPlay?.end || drive?.end || drive?.start || latestPlay?.start;
+  if (!drive && !spot && !latestPlay && !summary?.footballField) return null;
+  const playAthletes = drivePlayAthletes(latestPlay);
+  const displayTeam = summary?.footballField?.possessionTeam || drive?.team;
+  return (
+    <section className="sportsSubpanel footballDrivePanel">
+      <div className="sportsSubpanelHeader">
+        <div>
+          <h3>{drive?.result ? "Latest Drive" : "Current Drive"}</h3>
+          <span>{drive?.description || "Drive in progress"}</span>
+        </div>
+        {displayTeam?.logo && <img src={displayTeam.logo} alt="" />}
+      </div>
+      <FootballField summary={summary} play={latestPlay} away={away} home={home} />
+      {latestPlay?.text && (
+        <div className="driveLastPlay">
+          <div>
+            <strong>{latestPlay.shortDescription || latestPlay.type || "Last Play"}</strong>
+            <small>{[spot?.downDistanceText || spot?.shortDownDistanceText, spot?.possessionText].filter(Boolean).join(" · ")}</small>
+          </div>
+          <span>{latestPlay.text}</span>
+          {playAthletes.length > 0 && (
+            <div className="drivePlayers">
+              {playAthletes.map((athlete) => (
+                <span key={`${latestPlay.id}-${athlete.id || athlete.name}-${athlete.role || ""}`}>
+                  {athlete.headshot && <img src={athlete.headshot} alt="" loading="lazy" />}
+                  <b>{athlete.shortName || athlete.name}</b>
+                  {athlete.role && <small>{formatPlayerRole(athlete.role)}</small>}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FootballField({ summary, play, away, home }) {
+  const model = summary?.footballField || {};
+  const ball = model.ball || null;
+  const possessionTeam = model.possessionTeam || play?.team || ball?.team || null;
+  const possession = possessionTeam?.abbreviation || "";
+  const possessionLogo = possessionTeam?.logo || "";
+  const current = finiteNumber(ball?.percent);
+  const firstDown = finiteNumber(model.firstDown?.percent);
+  const start = finiteNumber(model.lastPlay?.startPercent);
+  const end = finiteNumber(model.lastPlay?.endPercent);
+  const kind = model.lastPlay?.kind || "";
+  const hasPath = Boolean(model.lastPlay?.showRoute) && Number.isFinite(start) && Number.isFinite(end);
+  const visualMarker = Number.isFinite(current) ? fieldMarkerPercent(current) : null;
+  const path = hasPath ? footballPlayPath(start, end, kind) : "";
+  const playSpotText = ball?.possessionText || ball?.downDistanceText || "";
+  return (
+    <div className="footballField" aria-label="Current drive field position">
+      <span className="footballFieldEndzone">
+        {away?.team?.logo ? <img src={away.team.logo} alt={away?.team?.abbreviation || "Away"} /> : away?.team?.abbreviation || "AWAY"}
+      </span>
+      <div className="footballFieldSurface">
+        <svg viewBox="0 0 100 48" preserveAspectRatio="none" aria-hidden="true">
+          {Number.isFinite(firstDown) && <line x1={firstDown} x2={firstDown} y1="4" y2="44" className="footballFirstDownLine" />}
+          {hasPath && <path d={path} className={`footballFieldPath ${kind}`} />}
+          {hasPath && <circle cx={start} cy={footballPathY(kind)} r="1.2" className="footballFieldDot start" />}
+          {hasPath && <circle cx={end} cy={footballPathY(kind)} r="1.6" className="footballFieldDot end" />}
+        </svg>
+        {[10, 20, 30, 40, 50, 40, 30, 20, 10].map((yard, index) => <i key={`${yard}-${index}`}>{yard}</i>)}
+        {visualMarker !== null && (
+          <b className={possessionLogo ? "footballFieldMarker logoOnly" : "footballFieldMarker"} style={{ left: `${visualMarker}%` }}>
+            {possessionLogo && <img src={possessionLogo} alt="" />}
+            {!possessionLogo && <span>{possession || playSpotText || "Ball"}</span>}
+          </b>
+        )}
+      </div>
+      <span className="footballFieldEndzone">
+        {home?.team?.logo ? <img src={home.team.logo} alt={home?.team?.abbreviation || "Home"} /> : home?.team?.abbreviation || "HOME"}
+      </span>
+    </div>
+  );
+}
+
+function footballPlayPath(start, end, kind) {
+  const y = footballPathY(kind);
+  if (kind === "pass") {
+    const mid = (start + end) / 2;
+    const lift = Math.max(16, Math.min(28, Math.abs(end - start) * 0.72));
+    return `M ${start.toFixed(1)} ${y} Q ${mid.toFixed(1)} ${(y - lift).toFixed(1)} ${end.toFixed(1)} ${y}`;
+  }
+  return `M ${start.toFixed(1)} ${y} L ${end.toFixed(1)} ${y}`;
+}
+
+function footballPathY(kind) {
+  return kind === "pass" ? 36 : 34;
+}
+
+
+function fieldMarkerPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(2.8, Math.min(97.2, numeric));
+}
+
+function finiteNumber(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : NaN;
+}
+
+function drivePlayAthletes(play) {
+  const seen = new Set();
+  return (play?.athletes || []).filter((athlete) => {
+    const key = athlete.id || athlete.name || athlete.shortName;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return athlete.name || athlete.shortName || athlete.headshot;
+  }).slice(0, 4);
+}
+
+function formatPlayerRole(value = "") {
+  const labels = {
+    passer: "Passer",
+    receiver: "Receiver",
+    rusher: "Rusher",
+    tackler: "Tackle",
+    sacker: "Sack",
+    interceptor: "Interception",
+    kicker: "Kicker",
+    punter: "Punter",
+  };
+  return labels[value] || String(value).replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function FootballSnapshotGrid({ summary, away, home, teamTotals }) {
+  const hasLeaders = (summary?.leaders || []).some((entry) => entry.leaders?.length);
+  const hasTeamStats = teamTotals.length >= 2;
+  if (!hasLeaders && !hasTeamStats) return null;
+  return (
+    <div className="footballSnapshotGrid">
+      {hasLeaders && <FootballLeaders leaders={summary.leaders} away={away} home={home} />}
+      {hasTeamStats && <FootballTeamStats teams={teamTotals} away={away} home={home} />}
+    </div>
+  );
+}
+
+function FootballLeaders({ leaders, away, home }) {
+  const categories = ["passingYards", "rushingYards", "receivingYards", "sacks", "totalTackles"];
+  const byTeam = new Map((leaders || []).map((entry) => [String(entry.team?.id || entry.team?.abbreviation), entry]));
+  const leaderFor = (team, categoryName) => {
+    const entry = byTeam.get(String(team?.team?.id)) || byTeam.get(String(team?.team?.abbreviation));
+    return entry?.leaders?.find((category) => category.name === categoryName || category.label?.replace(/\s/g, "").toLowerCase() === categoryName.toLowerCase())?.leaders?.[0] || null;
+  };
+  return (
+    <section className="sportsSubpanel footballLeadersPanel">
+      <div className="sportsSubpanelHeader">
+        <h3>Game Leaders</h3>
+      </div>
+      <div className="leaderRows">
+        {categories.map((category) => {
+          const awayLeader = leaderFor(away, category);
+          const homeLeader = leaderFor(home, category);
+          const label = leaderLabel(category, awayLeader, homeLeader);
+          if (!awayLeader && !homeLeader) return null;
+          return (
+            <div className="leaderRow" key={category}>
+              <LeaderSide leader={awayLeader} />
+              <b>{label}</b>
+              <LeaderSide leader={homeLeader} right />
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function LeaderSide({ leader, right = false }) {
+  const athlete = leader?.athlete;
+  if (!leader || !athlete) return <span className={`leaderSide ${right ? "right" : ""} mutedLeader`}>None</span>;
+  return (
+    <span className={`leaderSide ${right ? "right" : ""}`}>
+      {athlete.headshot && <img src={athlete.headshot} alt="" />}
+      <strong>{leader.mainStat?.value ?? leader.value ?? "-"}</strong>
+      <small>{athlete.shortName || athlete.name} {athlete.position || ""}</small>
+    </span>
+  );
+}
+
+function leaderLabel(category, awayLeader, homeLeader) {
+  return {
+    passingYards: "Passing",
+    rushingYards: "Rushing",
+    receivingYards: "Receiving",
+    sacks: "Sacks",
+    totalTackles: "Tackles",
+  }[category] || awayLeader?.mainStat?.label || homeLeader?.mainStat?.label || category;
+}
+
+function FootballTeamStats({ teams, away, home }) {
+  const awayStats = teamStatMap(teams, away);
+  const homeStats = teamStatMap(teams, home);
+  const rows = [
+    ["totalYards", "Total Yards"],
+    ["turnovers", "Turnovers"],
+    ["firstDowns", "1st Downs"],
+    ["thirdDownEff", "3rd Down"],
+    ["fourthDownEff", "4th Down"],
+    ["redZoneAttempts", "Red Zone"],
+    ["possessionTime", "Possession"],
+  ];
+  return (
+    <section className="sportsSubpanel footballTeamStatsPanel">
+      <div className="sportsSubpanelHeader">
+        <h3>Team Stats</h3>
+      </div>
+      <div className="teamCompareRows">
+        {rows.map(([key, label]) => <TeamCompareRow key={key} label={label} away={awayStats.get(key)} home={homeStats.get(key)} />)}
+      </div>
+    </section>
+  );
+}
+
+function teamStatMap(teams, competitor) {
+  const team = teams.find((entry) => String(entry.team?.id) === String(competitor?.team?.id))
+    || teams.find((entry) => entry.team?.abbreviation === competitor?.team?.abbreviation);
+  return new Map((team?.statistics || []).flatMap((group) => group.stats?.length ? group.stats : [group]).map((stat) => [stat.name, stat.displayValue ?? stat.value ?? "-"]));
+}
+
+function TeamCompareRow({ label, away, home }) {
+  return (
+    <div className="teamCompareRow">
+      <strong>{away ?? "-"}</strong>
+      <span>{label}</span>
+      <strong>{home ?? "-"}</strong>
+    </div>
+  );
+}
+
 function FootballLineScore({ summary, away, home, periodLabels }) {
+  const drive = summary?.drives?.current;
+  const field = summary?.footballField || {};
+  const spot = field.ball || null;
+  const possession = field.possessionTeam || drive?.team || summary?.recentPlays?.[0]?.team;
+  const driveLabel = spot?.shortDownDistanceText || spot?.downDistanceText || drive?.description || "";
+  const fieldLabel = spot?.possessionText || "";
   return (
     <div className="gameCenter">
       <span>{gameStatusText(summary)}</span>
@@ -75,6 +324,13 @@ function FootballLineScore({ summary, away, home, periodLabels }) {
           </React.Fragment>
         ))}
       </div>
+      {(driveLabel || fieldLabel) && (
+        <div className="scoreboardDriveChip">
+          {possession?.logo && <img src={possession.logo} alt="" />}
+          <b>{driveLabel}</b>
+          {fieldLabel && <span>{fieldLabel}</span>}
+        </div>
+      )}
       {summary.clock && <small>{summary.clock}</small>}
     </div>
   );
@@ -235,6 +491,109 @@ function BaseballExtras({ summary, away, home }) {
   );
 }
 
+function FootballExtras({ summary, away, home }) {
+  const scoring = summary?.scoringSummary || [];
+  const plays = summary?.recentPlays || [];
+  const injuries = summary?.injuries || [];
+  const broadcasts = summary?.broadcasts || [];
+  const gameInfo = summary?.gameInfo || {};
+  const hasInfo = gameInfo.venue?.name || gameInfo.weather || broadcasts.length > 0;
+  const hasInjuries = injuries.some((entry) => entry.injuries?.length);
+  if (!scoring.length && !plays.length && !hasInfo && !hasInjuries) return null;
+  return (
+    <div className="footballExtras">
+      <div className="footballExtrasMain">
+        {plays.length > 0 && (
+          <section className="sportsSubpanel">
+            <div className="sportsSubpanelHeader">
+              <h3>Recent Plays</h3>
+            </div>
+            <div className="recentPlaysList compact">
+              {plays.map((play) => <PlayRow key={play.id || `${play.wallclock}-${play.text}`} play={play} away={away} home={home} />)}
+            </div>
+          </section>
+        )}
+        {scoring.length > 0 && (
+          <section className="sportsSubpanel">
+            <div className="sportsSubpanelHeader">
+              <h3>Scoring Plays</h3>
+            </div>
+            <div className="scoringSummaryList">
+              {scoring.map((play) => <PlayRow key={play.id || `${play.period?.number}-${play.text}`} play={play} away={away} home={home} />)}
+            </div>
+          </section>
+        )}
+      </div>
+      {hasInfo && (
+        <aside className="footballExtrasAside">
+          <section className="sportsSubpanel gameInfoPanel">
+            <div className="sportsSubpanelHeader">
+              <h3>Game Info</h3>
+            </div>
+            <div className="gameInfoGrid">
+              {gameInfo.venue?.name && (
+                <div>
+                  {gameInfo.venue.image && <img src={gameInfo.venue.image} alt="" />}
+                  <b>{gameInfo.venue.name}</b>
+                  <span>{[gameInfo.venue.city, gameInfo.venue.state].filter(Boolean).join(", ")}</span>
+                </div>
+              )}
+              {gameInfo.weather && (
+                <div>
+                  <b>Weather</b>
+                  <span>{[gameInfo.weather.temperature ? `${gameInfo.weather.temperature}°` : "", gameInfo.weather.condition].filter(Boolean).join(" · ")}</span>
+                </div>
+              )}
+              {broadcasts.length > 0 && (
+                <div>
+                  <b>Broadcasts</b>
+                  <span>{broadcasts.map((broadcast) => broadcast.shortName || broadcast.name).filter(Boolean).join(", ")}</span>
+                </div>
+              )}
+            </div>
+          </section>
+          {hasInjuries && <FootballInjuries injuries={injuries} />}
+        </aside>
+      )}
+      {!hasInfo && hasInjuries && (
+        <aside className="footballExtrasAside">
+          <FootballInjuries injuries={injuries} />
+        </aside>
+      )}
+    </div>
+  );
+}
+
+function FootballInjuries({ injuries }) {
+  return (
+    <section className="sportsSubpanel injuryPanel">
+      <div className="sportsSubpanelHeader">
+        <h3>Injury Report</h3>
+      </div>
+      <div className="injuryTeams">
+        {injuries.map((entry) => (
+          <div className="injuryTeam" key={entry.team?.id || entry.team?.abbreviation}>
+            <h4>
+              {entry.team?.logo && <img src={entry.team.logo} alt="" />}
+              {entry.team?.name || entry.team?.abbreviation || "Team"}
+            </h4>
+            {entry.injuries.slice(0, 8).map((injury) => (
+              <div className="injuryRow" key={`${entry.team?.id}-${injury.athlete?.id || injury.athlete?.name}-${injury.status}`}>
+                {injury.athlete?.headshot && <img src={injury.athlete.headshot} alt="" />}
+                <div>
+                  <b>{injury.athlete?.shortName || injury.athlete?.name || "Player"}</b>
+                  <span>{[injury.athlete?.position, injury.type].filter(Boolean).join(" · ")}</span>
+                </div>
+                <strong>{injury.detail || injury.status}</strong>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function WinProbabilityPanel({ summary, away, home }) {
   const series = summary?.winProbability?.series || [];
   const implied = summary?.odds?.impliedWinProbability;
@@ -324,7 +683,7 @@ function ordinal(value) {
 function PlayRow({ play, away, home }) {
   const awayLabel = away?.team?.abbreviation || "Away";
   const homeLabel = home?.team?.abbreviation || "Home";
-  const period = [play.period?.type, play.period?.displayValue || play.period?.number].filter(Boolean).join(" ");
+  const period = playPeriodLabel(play);
   const athletes = (play.athletes || []).filter((athlete) => athlete.name || athlete.headshot).slice(0, 3);
   return (
     <article className={play.scoringPlay ? "playRow scoring" : "playRow"}>
@@ -349,6 +708,15 @@ function PlayRow({ play, away, home }) {
       <small>{awayLabel} @ {homeLabel}</small>
     </article>
   );
+}
+
+function playPeriodLabel(play) {
+  const type = play.period?.type || "";
+  const display = play.period?.displayValue || "";
+  const number = Number(play.period?.number);
+  if (type || display) return [type, display || play.period?.number].filter(Boolean).join(" ");
+  if (Number.isFinite(number)) return number <= 4 ? `${ordinal(number)} Quarter` : number === 5 ? "Overtime" : `${ordinal(number - 4)} Overtime`;
+  return "";
 }
 
 function formatPlayTimestamp(value) {

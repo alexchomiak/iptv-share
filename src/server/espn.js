@@ -88,6 +88,8 @@ function compactTeam(competitor) {
     name: team.displayName || team.shortDisplayName || competitor?.displayName || team.name || competitor?.name || "",
     abbreviation: team.abbreviation || "",
     logo: team.logo || team.logos?.[0]?.href || "",
+    color: team.color || "",
+    alternateColor: team.alternateColor || "",
     homeAway: competitor?.homeAway || "",
   };
 }
@@ -235,6 +237,7 @@ function buildAthleteLookup(payload = {}) {
     athletes.set(String(athlete.id), compactAthlete(athlete));
   };
 
+  for (const athlete of Object.values(payload.entities?.athletes || {})) remember(athlete);
   for (const team of asList(payload.boxscore?.players)) {
     for (const group of asList(team.statistics)) {
       for (const entry of asList(group.athletes)) remember(entry.athlete);
@@ -246,9 +249,40 @@ function buildAthleteLookup(payload = {}) {
   return athletes;
 }
 
+function buildTeamLookup(payload = {}, competitors = []) {
+  const teams = new Map();
+  const remember = (team, extras = {}) => {
+    const compact = {
+      id: team?.id || extras.id || "",
+      name: team?.displayName || team?.shortDisplayName || team?.name || extras.name || "",
+      abbreviation: team?.abbreviation || extras.abbreviation || "",
+      logo: team?.logo || team?.logos?.[0]?.href || extras.logo || "",
+      color: team?.color || "",
+      alternateColor: team?.alternateColor || "",
+      homeAway: extras.homeAway || "",
+    };
+    if (!compact.id && !compact.abbreviation) return;
+    if (compact.id) teams.set(String(compact.id), compact);
+    if (compact.abbreviation) teams.set(String(compact.abbreviation), compact);
+  };
+  for (const competitor of competitors) remember(competitor.team, { ...competitor.team, homeAway: competitor.homeAway });
+  for (const team of Object.values(payload.entities?.teams || {})) remember(team);
+  for (const entry of asList(payload.boxscore?.teams)) remember(entry.team, { homeAway: entry.homeAway });
+  for (const entry of asList(payload.leaders)) remember(entry.team);
+  for (const entry of asList(payload.injuries)) remember(entry.team);
+  return teams;
+}
+
+function resolveTeamReference(reference = {}, teamsById = new Map()) {
+  const key = reference?.$key || reference?.team?.$key || reference?.id || reference?.teamId || reference?.team?.id || "";
+  if (key && teamsById.has(String(key))) return teamsById.get(String(key));
+  if (reference?.team && !reference.team.$key) return compactTeam({ team: reference.team, homeAway: reference.homeAway });
+  return key ? { id: String(key), name: "", abbreviation: "", logo: "", homeAway: "" } : null;
+}
+
 function enrichAthleteReference(reference = {}, athletesById = new Map(), fallbackRole = "") {
   const source = reference.athlete || reference.player || reference;
-  const id = source?.id || reference.playerId || "";
+  const id = source?.id || source?.$key || reference.playerId || reference.$key || "";
   const role = reference.type || reference.role || fallbackRole;
   const compact = athletesById.get(String(id)) || compactAthlete(source, role);
   if (!compact.id && !compact.name) return null;
@@ -302,12 +336,40 @@ function compactSituation(situation = {}, plays = [], athletesById = new Map()) 
   };
 }
 
-function compactPlay(play = {}, athletesById = new Map()) {
+function allPayloadPlays(payload = {}) {
+  const entityPlays = payload.entities?.plays && typeof payload.entities.plays === "object"
+    ? Object.values(payload.entities.plays)
+    : [];
+  return asList(payload.plays).length ? asList(payload.plays) : entityPlays;
+}
+
+function resolvePlayReference(reference = {}, playsById = new Map()) {
+  const id = reference?.$key || reference?.id || reference?.playId || "";
+  return id && playsById.has(String(id)) ? playsById.get(String(id)) : reference;
+}
+
+function compactPlaySpot(spot = {}, teamsById = new Map()) {
+  if (!spot || typeof spot !== "object") return null;
+  return {
+    team: resolveTeamReference(spot.team || spot, teamsById),
+    yardLine: spot.yardLine,
+    down: spot.down,
+    distance: spot.distance,
+    yardsToEndzone: spot.yardsToEndzone,
+    downDistanceText: spot.downDistanceText || "",
+    shortDownDistanceText: spot.shortDownDistanceText || "",
+    possessionText: spot.possessionText || spot.text || "",
+    clock: spot.clock?.displayValue || "",
+  };
+}
+
+function compactPlay(play = {}, athletesById = new Map(), teamsById = new Map()) {
   return {
     id: play.id || "",
     sequenceNumber: play.sequenceNumber || "",
     text: play.text || play.shortText || "",
     shortText: play.shortText || play.text || "",
+    shortDescription: play.shortDescription || "",
     type: play.type?.text || play.type?.abbreviation || play.type?.type || "",
     scoringPlay: Boolean(play.scoringPlay),
     scoreValue: play.scoreValue ?? 0,
@@ -318,12 +380,220 @@ function compactPlay(play = {}, athletesById = new Map()) {
       number: play.period?.number ?? play.period,
       displayValue: play.period?.displayValue || "",
     },
-    teamId: play.team?.id || "",
+    clock: play.clock?.displayValue || "",
+    team: resolveTeamReference(play.team, teamsById),
+    teamId: play.team?.id || play.team?.$key || "",
+    start: compactPlaySpot(play.start, teamsById),
+    end: compactPlaySpot(play.end, teamsById),
+    statYardage: play.statYardage,
     wallclock: play.wallclock || "",
     outs: play.outs,
     pitchCount: play.pitchCount || play.resultCount || null,
     athletes: compactPlayAthletes(play, athletesById),
   };
+}
+
+function compactDrive(drive = {}, playsById = new Map(), teamsById = new Map(), athletesById = new Map()) {
+  if (!drive || typeof drive !== "object") return null;
+  const plays = asList(drive.plays)
+    .map((play) => resolvePlayReference(play, playsById))
+    .filter((play) => play?.id || play?.text)
+    .map((play) => compactPlay(play, athletesById, teamsById));
+  return {
+    id: drive.id || "",
+    description: drive.description || "",
+    team: resolveTeamReference(drive.team, teamsById),
+    start: compactPlaySpot(drive.start, teamsById),
+    end: compactPlaySpot(drive.end, teamsById),
+    yards: drive.yards,
+    offensivePlays: drive.offensivePlays,
+    timeElapsed: drive.timeElapsed?.displayValue || "",
+    result: drive.displayResult || drive.shortDisplayResult || drive.result || "",
+    shortResult: drive.shortDisplayResult || drive.result || "",
+    isScore: Boolean(drive.isScore),
+    plays,
+  };
+}
+
+function compactFootballDrives(payload = {}, athletesById = new Map(), teamsById = new Map()) {
+  const plays = allPayloadPlays(payload);
+  const playsById = new Map(plays.map((play) => [String(play.id), play]));
+  const current = compactDrive(payload.drives?.current, playsById, teamsById, athletesById);
+  const previous = asList(payload.drives?.previous)
+    .map((drive) => compactDrive(drive, playsById, teamsById, athletesById))
+    .filter(Boolean)
+    .slice(-12)
+    .reverse();
+  return { current, previous };
+}
+
+function compactFootballField(payload = {}, drives = {}, competitors = [], teamsById = new Map()) {
+  const away = competitors.find((entry) => entry.homeAway === "away") || competitors[0];
+  const home = competitors.find((entry) => entry.homeAway === "home") || competitors[1];
+  const currentDrive = drives?.current || null;
+  const latestPlay = currentDrive?.plays?.at(-1) || compactRecentPlays(payload, new Map(), teamsById)?.[0] || null;
+  const possessionTeam = resolveFootballPossessionTeam(payload, currentDrive, latestPlay, teamsById);
+  const liveSpot = compactFootballLiveSpot(payload, teamsById);
+  const currentSpot = bestFootballCurrentSpot([liveSpot, currentDrive?.end, latestPlay?.end, currentDrive?.start, latestPlay?.start]);
+  const ballPercent = footballFieldPercent(currentSpot, away, home, possessionTeam);
+  const firstDownPercent = footballFirstDownPercent(currentSpot, possessionTeam, away, home);
+  const startPercent = footballFieldPercent(latestPlay?.start, away, home, possessionTeam);
+  const endPercent = footballFieldPercent(latestPlay?.end, away, home, possessionTeam);
+  const playKind = footballPlayKind(latestPlay);
+  const showRoute =
+    Boolean(playKind) &&
+    Number.isFinite(startPercent) &&
+    Number.isFinite(endPercent) &&
+    Math.abs(startPercent - endPercent) > 0.5 &&
+    Number.isFinite(ballPercent) &&
+    Math.abs(endPercent - ballPercent) <= 1.5;
+  return {
+    possessionTeam,
+    direction: footballPossessionSide(possessionTeam, away, home) === "home" ? "left" : "right",
+    ball: currentSpot
+      ? {
+          ...currentSpot,
+          percent: ballPercent,
+        }
+      : null,
+    firstDown: Number.isFinite(firstDownPercent)
+      ? {
+          percent: firstDownPercent,
+          distance: footballDistanceToGain(currentSpot),
+          goalToGo: footballIsGoalToGo(currentSpot),
+        }
+      : null,
+    lastPlay: latestPlay
+      ? {
+          id: latestPlay.id || "",
+          kind: playKind || "",
+          startPercent,
+          endPercent,
+          showRoute,
+        }
+      : null,
+  };
+}
+
+function resolveFootballPossessionTeam(payload = {}, currentDrive = {}, latestPlay = {}, teamsById = new Map()) {
+  const byId = payload.possessionTeamId ? resolveTeamReference({ id: payload.possessionTeamId }, teamsById) : null;
+  return byId || currentDrive?.team || latestPlay?.team || currentDrive?.end?.team || latestPlay?.end?.team || currentDrive?.start?.team || latestPlay?.start?.team || null;
+}
+
+function compactFootballLiveSpot(payload = {}, teamsById = new Map()) {
+  const downDistanceText = payload.downDistanceText || payload.situation?.downDistanceText || "";
+  const possessionText = payload.possessionText || payload.situation?.possessionText || parseFootballSpotText(downDistanceText)?.text || "";
+  if (!downDistanceText && !possessionText && !payload.possessionTeamId) return null;
+  const parsedDown = parseFootballDownDistance(downDistanceText);
+  return {
+    team: payload.possessionTeamId ? resolveTeamReference({ id: payload.possessionTeamId }, teamsById) : resolveTeamReference(parseFootballSpotText(possessionText)?.team, teamsById),
+    yardLine: parseFootballSpotText(possessionText)?.yardLine,
+    down: payload.down ?? parsedDown.down,
+    distance: payload.distance ?? parsedDown.distance,
+    yardsToEndzone: payload.yardsToEndzone,
+    downDistanceText,
+    shortDownDistanceText: parsedDown.shortText || "",
+    possessionText,
+    clock: payload.clock?.displayValue || payload.clock || "",
+  };
+}
+
+function bestFootballCurrentSpot(spots = []) {
+  return spots.find((spot) => spot && (spot.possessionText || spot.yardsToEndzone != null))
+    || spots.find((spot) => spot && (spot.downDistanceText || spot.shortDownDistanceText))
+    || null;
+}
+
+function parseFootballSpotText(value = "") {
+  const text = String(value || "").trim();
+  const atMatch = text.match(/\bat\s+([A-Z]{2,4})\s+(\d{1,2})\b/i);
+  const plainMatch = text.match(/^([A-Z]{2,4})\s+(\d{1,2})$/i);
+  const midfieldMatch = text.match(/\bat\s+(50)\b/i) || text.match(/^(50)$/);
+  const match = atMatch || plainMatch;
+  if (match) {
+    return {
+      text: `${match[1].toUpperCase()} ${Number(match[2])}`,
+      team: { abbreviation: match[1].toUpperCase() },
+      yardLine: Number(match[2]),
+    };
+  }
+  if (midfieldMatch) return { text: "50", team: null, yardLine: 50 };
+  return null;
+}
+
+function parseFootballDownDistance(value = "") {
+  const text = String(value || "").trim();
+  const downMatch = text.match(/\b(1st|2nd|3rd|4th)\b/i);
+  const distanceMatch = text.match(/&\s*(\d{1,2}|goal)\b/i);
+  const downMap = { "1st": 1, "2nd": 2, "3rd": 3, "4th": 4 };
+  const distanceText = distanceMatch?.[1] || "";
+  return {
+    down: downMap[downMatch?.[1]?.toLowerCase()] || null,
+    distance: /^goal$/i.test(distanceText) ? null : Number(distanceText) || null,
+    shortText: downMatch && distanceText ? `${downMatch[1]} & ${distanceText[0].toUpperCase()}${distanceText.slice(1)}` : "",
+  };
+}
+
+function footballFieldPercent(spot, away, home, possessionTeam) {
+  if (!spot) return null;
+  const parsed = parseFootballSpotText(spot.possessionText || spot.downDistanceText);
+  if (parsed?.yardLine === 50 && !parsed.team) return 50;
+  if (parsed?.team) {
+    const side = footballPossessionSide(parsed.team, away, home);
+    if (side === "away") return clampFieldPercent(parsed.yardLine);
+    if (side === "home") return clampFieldPercent(100 - parsed.yardLine);
+  }
+  const yardsToEndzone = Number(spot.yardsToEndzone);
+  const side = footballPossessionSide(possessionTeam || spot.team, away, home);
+  if (!Number.isFinite(yardsToEndzone) || !side) return null;
+  return clampFieldPercent(side === "away" ? 100 - yardsToEndzone : yardsToEndzone);
+}
+
+function footballFirstDownPercent(spot, possessionTeam, away, home) {
+  const ball = footballFieldPercent(spot, away, home, possessionTeam);
+  if (!Number.isFinite(ball)) return null;
+  const side = footballPossessionSide(possessionTeam || spot?.team, away, home);
+  if (!side) return null;
+  if (footballIsGoalToGo(spot)) return side === "home" ? 0 : 100;
+  const distance = footballDistanceToGain(spot);
+  if (!Number.isFinite(distance) || distance <= 0) return null;
+  return clampFieldPercent(side === "home" ? ball - distance : ball + distance);
+}
+
+function footballDistanceToGain(spot = {}) {
+  const direct = Number(spot.distance);
+  if (Number.isFinite(direct) && direct > 0) return direct;
+  const parsed = parseFootballDownDistance(spot.shortDownDistanceText || spot.downDistanceText);
+  return parsed.distance;
+}
+
+function footballIsGoalToGo(spot = {}) {
+  return /&\s*goal\b/i.test(`${spot.shortDownDistanceText || ""} ${spot.downDistanceText || ""}`);
+}
+
+function footballPossessionSide(team, away, home) {
+  const id = String(team?.id || "");
+  const abbreviation = String(team?.abbreviation || "");
+  if (id && String(away?.team?.id || "") === id) return "away";
+  if (id && String(home?.team?.id || "") === id) return "home";
+  if (abbreviation && String(away?.team?.abbreviation || "") === abbreviation) return "away";
+  if (abbreviation && String(home?.team?.abbreviation || "") === abbreviation) return "home";
+  return "";
+}
+
+function footballPlayKind(play = {}) {
+  const text = [play?.type, play?.shortDescription, play?.shortText, play?.text].filter(Boolean).join(" ").toLowerCase();
+  if (/timeout|end quarter|two-minute warning/.test(text)) return "";
+  if (/pass|reception|intercept/.test(text)) return "pass";
+  if (/punt|kick|field goal/.test(text)) return "kick";
+  if (/rush|run|sack|scramble/.test(text)) return "run";
+  return "";
+}
+
+function clampFieldPercent(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(0, Math.min(100, numeric));
 }
 
 function compactGameInfo(payload = {}, competition = {}) {
@@ -465,7 +735,7 @@ function probabilityPercent(value) {
 
 function compactWinProbability(payload = {}, competitors = []) {
   const rawSeries = payload.winProbability || payload.winprobability || payload.winProbabilities || payload.probabilities || [];
-  const playsWithProbability = asList(payload.plays).filter((play) =>
+  const playsWithProbability = allPayloadPlays(payload).filter((play) =>
     ["homeWinPercentage", "awayWinPercentage", "homeWinProbability", "awayWinProbability", "probability"].some((key) => play[key] !== undefined),
   );
   const source = asList(rawSeries).length ? asList(rawSeries) : playsWithProbability;
@@ -497,21 +767,63 @@ function compactWinProbability(payload = {}, competitors = []) {
   };
 }
 
-function compactScoringSummary(payload = {}, athletesById = new Map()) {
+function compactScoringSummary(payload = {}, athletesById = new Map(), teamsById = new Map()) {
+  const playsById = new Map(allPayloadPlays(payload).map((play) => [String(play.id), play]));
   const scoring = payload.scoringPlays || payload.scrSumm || [];
   const scoringList = asList(scoring);
   if (scoringList.length) {
-    return scoringList.map((play) => compactPlay(play, athletesById)).filter((play) => play.text);
+    return scoringList
+      .map((play) => resolvePlayReference(play, playsById))
+      .map((play) => compactPlay(play, athletesById, teamsById))
+      .filter((play) => play.text);
   }
-  return asList(payload.plays).filter((play) => play.scoringPlay).map((play) => compactPlay(play, athletesById));
+  return allPayloadPlays(payload).filter((play) => play.scoringPlay).map((play) => compactPlay(play, athletesById, teamsById));
 }
 
-function compactRecentPlays(payload = {}, athletesById = new Map()) {
-  return asList(payload.plays)
+function compactRecentPlays(payload = {}, athletesById = new Map(), teamsById = new Map()) {
+  return allPayloadPlays(payload)
     .filter((play) => play.text && play.summaryType !== "P")
-    .map((play) => compactPlay(play, athletesById))
+    .sort((a, b) => Number(a.sequenceNumber || 0) - Number(b.sequenceNumber || 0))
+    .map((play) => compactPlay(play, athletesById, teamsById))
     .slice(-20)
     .reverse();
+}
+
+function compactLeaders(payload = {}, athletesById = new Map(), teamsById = new Map()) {
+  return asList(payload.leaders).map((entry) => ({
+    team: resolveTeamReference(entry.team, teamsById),
+    leaders: asList(entry.leaders).map((category) => ({
+      name: category.name || "",
+      label: category.displayName || category.shortDisplayName || category.name || "",
+      leaders: asList(category.leaders).map((leader) => {
+        const athlete = enrichAthleteReference(leader.athlete || leader, athletesById);
+        return {
+          value: leader.value,
+          displayValue: leader.displayValue || "",
+          summary: leader.summary || "",
+          mainStat: {
+            value: leader.mainStat?.value ?? leader.value ?? "",
+            label: leader.mainStat?.label || "",
+          },
+          athlete,
+        };
+      }).filter((leader) => leader.athlete?.name || leader.displayValue),
+    })).filter((category) => category.leaders.length),
+  })).filter((entry) => entry.team || entry.leaders.length);
+}
+
+function compactInjuries(payload = {}, athletesById = new Map(), teamsById = new Map()) {
+  return asList(payload.injuries).map((entry) => ({
+    team: resolveTeamReference(entry.team, teamsById),
+    injuries: asList(entry.injuries).map((injury) => ({
+      status: injury.status || injury.type?.description || injury.type?.abbreviation || "",
+      type: injury.details?.type || "",
+      detail: injury.details?.detail || injury.details?.fantasyStatus?.displayDescription || "",
+      returnDate: injury.details?.returnDate || "",
+      date: injury.date || "",
+      athlete: enrichAthleteReference(injury.athlete || injury, athletesById),
+    })).filter((injury) => injury.athlete?.name || injury.status),
+  })).filter((entry) => entry.team || entry.injuries.length);
 }
 
 function inferStatGroupName(labels = []) {
@@ -529,6 +841,8 @@ export function normalizeGameSummary(payload = {}, leagueKey = "nfl") {
   const statusType = status.type || {};
   const competitors = compactScoreboard(header);
   const athletesById = buildAthleteLookup(payload);
+  const teamsById = buildTeamLookup(payload, competitors);
+  const footballDrives = selected.sport === "football" ? compactFootballDrives(payload, athletesById, teamsById) : null;
   const fallbackName = competitors.length >= 2
     ? `${competitors.find((item) => item.homeAway === "away")?.team?.abbreviation || competitors[0].team?.abbreviation || ""} @ ${competitors.find((item) => item.homeAway === "home")?.team?.abbreviation || competitors[1].team?.abbreviation || ""}`.trim()
     : "";
@@ -550,11 +864,15 @@ export function normalizeGameSummary(payload = {}, leagueKey = "nfl") {
     displayPeriod: status.displayPeriod || "",
     clock: status.displayClock || "",
     source: payload.__source || "summary",
-    situation: compactSituation(payload.situation, payload.plays || [], athletesById),
+    situation: compactSituation(payload.situation, allPayloadPlays(payload), athletesById),
     competitors,
     boxscore: compactBoxscore(payload.boxscore),
-    scoringSummary: compactScoringSummary(payload, athletesById),
-    recentPlays: compactRecentPlays(payload, athletesById),
+    scoringSummary: compactScoringSummary(payload, athletesById, teamsById),
+    recentPlays: compactRecentPlays(payload, athletesById, teamsById),
+    drives: footballDrives,
+    footballField: selected.sport === "football" ? compactFootballField(payload, footballDrives, competitors, teamsById) : null,
+    leaders: compactLeaders(payload, athletesById, teamsById),
+    injuries: compactInjuries(payload, athletesById, teamsById),
     gameInfo: compactGameInfo(payload, competition),
     broadcasts: compactBroadcasts(payload, competition),
     videos: compactVideos(payload),

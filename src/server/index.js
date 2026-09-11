@@ -1,6 +1,7 @@
 import path from "node:path";
 import crypto from "node:crypto";
 import { createServer } from "node:http";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import { Readable } from "node:stream";
 import express from "express";
 import cookie from "cookie";
@@ -39,10 +40,16 @@ const activeStreamResponses = new Map();
 const lastPresenceSignatures = new Map();
 const delayedSportsTimers = new Map();
 const lastSportsPayloadSignatures = new Map();
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+let lastExpiredShareCleanupAt = 0;
 const viewerActiveSeconds = 45;
+const viewerHeartbeatSeconds = 30;
+const streamHeartbeatSeconds = 25;
+const sportsPushHeartbeatSeconds = 45;
 const offlineViewerVisibleSeconds = 3600;
 const kickedViewerVisibleSeconds = 86400;
 const sportsEventOverrunLookupSeconds = 18 * 60 * 60;
+eventLoopDelay.enable();
 
 app.use(express.json({ limit: "1mb" }));
 app.use((req, _res, next) => {
@@ -102,11 +109,14 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function cleanupExpiredShares() {
+function cleanupExpiredShares(options = {}) {
+  const current = now();
+  if (!options.force && current - lastExpiredShareCleanupAt < 60) return;
+  lastExpiredShareCleanupAt = current;
   const cleanupDelay = cleanupDelaySeconds();
-  const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(cleanupDelay, now());
+  const expiredShares = db.prepare("SELECT id FROM share_links WHERE ends_at + ? < ?").all(cleanupDelay, current);
   for (const share of expiredShares) cleanupTemporaryShareArtifacts(share.id);
-  db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(cleanupDelay, now());
+  db.prepare("DELETE FROM share_links WHERE ends_at + ? < ?").run(cleanupDelay, current);
   archiveExpiredStaticEvents();
   db.prepare(
     `
@@ -121,7 +131,7 @@ function cleanupExpiredShares() {
         AND espn_final_fetched_at + ? < ?
       )
   `,
-  ).run(cleanupDelay, now(), cleanupDelay, now());
+  ).run(cleanupDelay, current, cleanupDelay, current);
   cleanupOrphanShareArtifacts();
 }
 
@@ -435,6 +445,44 @@ function touchViewer(token) {
   db.prepare("UPDATE share_viewers SET last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(now(), token);
 }
 
+function touchViewerIfStale(token, seconds = viewerHeartbeatSeconds) {
+  const current = now();
+  const viewer = db.prepare("SELECT kicked_at, last_seen_at FROM share_viewers WHERE token = ?").get(token);
+  if (!viewer) return { found: false, kicked: false, touched: false };
+  if (viewer.kicked_at) return { found: true, kicked: true, touched: false };
+  if (Number(viewer.last_seen_at || 0) < current - seconds) {
+    db.prepare("UPDATE share_viewers SET last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(current, token);
+    return { found: true, kicked: false, touched: true };
+  }
+  return { found: true, kicked: false, touched: false };
+}
+
+function updateViewerStreamState(token, active) {
+  const current = now();
+  const viewer = db
+    .prepare("SELECT kicked_at, stream_last_seen_at, stream_granted_at FROM share_viewers WHERE token = ?")
+    .get(token);
+  if (!viewer) return { found: false, kicked: false, changed: false, granted: false };
+  if (viewer.kicked_at) return { found: true, kicked: true, changed: false, granted: false };
+
+  const wasStreaming = Number(viewer.stream_last_seen_at || 0) >= current - viewerActiveSeconds;
+  const hasRecentGrant = Number(viewer.stream_granted_at || 0) >= current - viewerActiveSeconds;
+  if (active && hasRecentGrant) {
+    const stale = Number(viewer.stream_last_seen_at || 0) < current - streamHeartbeatSeconds;
+    if (stale || !wasStreaming) {
+      db.prepare("UPDATE share_viewers SET stream_last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(current, token);
+    }
+    return { found: true, kicked: false, changed: !wasStreaming, granted: true };
+  }
+
+  if (!active && (viewer.stream_last_seen_at || viewer.stream_granted_at)) {
+    db.prepare("UPDATE share_viewers SET stream_last_seen_at = NULL, stream_granted_at = NULL WHERE token = ? AND kicked_at IS NULL").run(token);
+    return { found: true, kicked: false, changed: wasStreaming || Boolean(viewer.stream_granted_at), granted: false };
+  }
+
+  return { found: true, kicked: false, changed: false, granted: hasRecentGrant };
+}
+
 function shareMaxViewers(kind, shareId) {
   const shareTable = kind === "static" ? "static_shares" : "share_links";
   const share = db.prepare(`SELECT max_viewers FROM ${shareTable} WHERE id = ?`).get(shareId);
@@ -541,10 +589,17 @@ function requestViewerStream(kind, shareId, token) {
     sendViewerSlot(kind, shareId, token, { status: "waiting", position: waitlistPosition(kind, shareId, token) });
     return { ok: false, status: 429, message: "Stream is full. You are on the waitlist.", waiting: true, position: waitlistPosition(kind, shareId, token) };
   }
-  db.prepare(
-    "UPDATE share_viewers SET last_seen_at = ?, stream_last_seen_at = ?, wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = ? WHERE token = ?",
-  ).run(current, current, current, token);
-  broadcastShareState(kind, shareId);
+  const shouldTouchStream =
+    !alreadyStreaming ||
+    !wasGranted ||
+    Number(viewer.stream_last_seen_at || 0) < current - streamHeartbeatSeconds ||
+    Number(viewer.stream_granted_at || 0) < current - streamHeartbeatSeconds;
+  if (shouldTouchStream) {
+    db.prepare(
+      "UPDATE share_viewers SET last_seen_at = ?, stream_last_seen_at = ?, wants_stream = 0, waitlist_joined_at = NULL, stream_granted_at = ? WHERE token = ?",
+    ).run(current, current, current, token);
+  }
+  if (!alreadyStreaming || viewer.wants_stream) broadcastShareState(kind, shareId);
   return { ok: true };
 }
 
@@ -1110,7 +1165,7 @@ async function withShareCutoff(cutoff, res, action) {
   }
 }
 
-async function withViewerStream(token, res, action) {
+async function withViewerStream(token, res, action, options = {}) {
   if (!activeStreamResponses.has(token)) activeStreamResponses.set(token, new Set());
   activeStreamResponses.get(token).add(res);
   try {
@@ -1121,7 +1176,9 @@ async function withViewerStream(token, res, action) {
       responses.delete(res);
       if (!responses.size) activeStreamResponses.delete(token);
     }
-    const viewer = db.prepare("SELECT share_kind, share_id FROM share_viewers WHERE token = ?").get(token);
+    const viewer = options.broadcastOnClose === false
+      ? null
+      : db.prepare("SELECT share_kind, share_id FROM share_viewers WHERE token = ?").get(token);
     if (viewer) {
       promoteWaitlist(viewer.share_kind, viewer.share_id);
       broadcastShareState(viewer.share_kind, viewer.share_id);
@@ -1546,6 +1603,38 @@ app.get("/api/sports/espn/game-package-debug", requireAuth, async (req, res) => 
 
 app.get("/api/sports/espn/fastcast-debug", requireAuth, (_req, res) => {
   res.json({ feeds: espnFastcastDebug() });
+});
+
+app.get("/api/debug/perf", requireAuth, (_req, res) => {
+  const shareRooms = Array.from(viewerSockets.entries()).map(([key, sockets]) => ({
+    key,
+    sockets: sockets.size,
+    joinedViewers: Array.from(sockets).filter((socket) => socket.viewerToken).length,
+    activeStreamSockets: Array.from(sockets).filter((socket) => socket.streamActive).length,
+  }));
+  const activeStreamCount = Array.from(activeStreamResponses.values()).reduce((count, responses) => count + responses.size, 0);
+  const toMs = (nanoseconds) => Math.round((Number(nanoseconds) / 1e6) * 100) / 100;
+  res.json({
+    uptimeSeconds: Math.round(process.uptime()),
+    memory: process.memoryUsage(),
+    eventLoopDelayMs: {
+      min: toMs(eventLoopDelay.min),
+      max: toMs(eventLoopDelay.max),
+      mean: toMs(eventLoopDelay.mean),
+      p95: toMs(eventLoopDelay.percentile(95)),
+      p99: toMs(eventLoopDelay.percentile(99)),
+    },
+    sockets: {
+      shareRooms,
+      viewerSockets: shareRooms.reduce((count, room) => count + room.sockets, 0),
+      adminSockets: adminSockets.size,
+    },
+    streams: {
+      viewerTokens: activeStreamResponses.size,
+      responses: activeStreamCount,
+    },
+  });
+  eventLoopDelay.reset();
 });
 
 app.get("/api/stream/:channelId", requireAuth, async (req, res) => {
@@ -2325,7 +2414,8 @@ function parseStoredJson(value) {
   }
 }
 
-function loadPastGames(shareId) {
+function loadPastGames(shareId, options = {}) {
+  const parseFinalSummary = options.parseFinalSummary !== false;
   return db
     .prepare(
       `
@@ -2340,7 +2430,7 @@ function loadPastGames(shareId) {
     .map((game) => ({
       ...game,
       icon_url: game.icon ? `/api/static-shares/${shareId}/past-games/${game.id}/image` : null,
-      final_summary: parseStoredJson(game.espn_final_summary),
+      final_summary: parseFinalSummary ? parseStoredJson(game.espn_final_summary) : null,
     }));
 }
 
@@ -2377,12 +2467,39 @@ function loadStaticEvents(shareId, includePast = true) {
 }
 
 function publicStaticEvents(share) {
-  return loadStaticEvents(share.id, true)
-    .filter((event) => !event.final_summary || now() <= Number(event.espn_final_fetched_at || 0) + config.streamGraceSeconds)
+  return db
+    .prepare(
+      `
+      SELECT static_share_events.*, channels.name AS channel_name
+      FROM static_share_events
+      JOIN channels ON channels.id = static_share_events.channel_id
+      WHERE static_share_events.static_share_id = ?
+        AND (
+          static_share_events.espn_final_summary IS NULL
+          OR ? <= COALESCE(static_share_events.espn_final_fetched_at, static_share_events.ends_at) + ?
+        )
+      ORDER BY static_share_events.starts_at
+    `,
+    )
+    .all(share.id, now(), config.streamGraceSeconds)
     .map((event) => ({
       ...event,
       icon: undefined,
       icon_url: event.icon ? `/api/public/static-event-image/${encodeURIComponent(share.slug)}/${event.id}` : null,
+      final_summary: undefined,
+      espn_final_summary: undefined,
+      espn: event.espn_event_id
+        ? {
+            league: event.espn_league,
+            id: event.espn_event_id,
+            name: event.espn_name,
+            shortName: event.espn_short_name,
+            date: event.espn_date,
+            status: event.espn_status,
+            home: { name: event.espn_home_name, abbreviation: event.espn_home_abbreviation, logo: event.espn_home_logo },
+            away: { name: event.espn_away_name, abbreviation: event.espn_away_abbreviation, logo: event.espn_away_logo },
+          }
+        : null,
     }));
 }
 
@@ -2703,7 +2820,8 @@ app.get("/api/public/share/:slug", async (req, res) => {
     payload.locked = locked;
     payload.events = events;
     payload.programs = events;
-    payload.pastGames = locked ? [] : publicPastGames(staticShare);
+    payload.pastGames = [];
+    payload.past_games_url = locked ? null : `/api/public/share/${encodeURIComponent(staticShare.slug)}/past-games`;
     payload.icon_url = staticShare.icon
       ? versionedImageUrl(`/api/public/static-share-icon/${encodeURIComponent(staticShare.slug)}`, staticShare.updated_at)
       : null;
@@ -2760,6 +2878,15 @@ app.get("/api/public/share/:slug", async (req, res) => {
   payload.hls_url = payload.stream_available && useFmp4 ? `/api/public/stream/${encodeURIComponent(share.slug)}?hls=1` : null;
   payload.stream_kind = payload.stream_available ? streamKind : null;
   res.json({ share: payload });
+});
+
+app.get("/api/public/share/:slug/past-games", async (req, res) => {
+  const share = db.prepare("SELECT * FROM static_shares WHERE slug = ?").get(req.params.slug);
+  if (!share || !staticShareIsUnlocked(req, share)) {
+    res.status(404).json({ error: "not found" });
+    return;
+  }
+  res.json({ pastGames: publicPastGames(share) });
 });
 
 app.get("/api/public/program-image/:slug/:programId", async (req, res) => {
@@ -2970,7 +3097,7 @@ app.get("/api/public/stream/:slug", async (req, res) => {
       return;
     }
     if (req.query.hls === "1" && req.query.segment) {
-      await withViewerStream(viewerToken, res, async () => serveHlsRemuxSegment(req, res));
+      await withViewerStream(viewerToken, res, async () => serveHlsRemuxSegment(req, res), { broadcastOnClose: false });
       return;
     }
     let targetUrl = event.stream_url;
@@ -3034,7 +3161,7 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     cutoffWindow = activeProgram;
   }
   if (req.query.hls === "1" && req.query.segment) {
-    await withViewerStream(viewerToken, res, async () => serveHlsRemuxSegment(req, res));
+    await withViewerStream(viewerToken, res, async () => serveHlsRemuxSegment(req, res), { broadcastOnClose: false });
     return;
   }
   if (req.query.u) {
@@ -3099,22 +3226,30 @@ function handleShareSocket(ws, req, slug) {
   ws.shareKind = kind;
   ws.shareId = shareId;
   ws.viewerToken = null;
+  ws.streamActive = false;
+  ws.lastStreamStateAt = 0;
+  ws.lastSportsPushAt = 0;
 
   const heartbeat = setInterval(() => {
     if (!ws.viewerToken) return;
-    const viewer = db.prepare("SELECT kicked_at FROM share_viewers WHERE token = ?").get(ws.viewerToken);
-    if (viewer?.kicked_at) {
+    const presence = touchViewerIfStale(ws.viewerToken);
+    if (presence.kicked) {
       sendJson(ws, { type: "kicked" });
       ws.close();
       return;
     }
-    touchViewer(ws.viewerToken);
     if (ws.streamActive) {
-      db.prepare("UPDATE share_viewers SET stream_last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(now(), ws.viewerToken);
-      ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-heartbeat" : "viewer-heartbeat", { sendSnapshot: false });
+      const streamState = updateViewerStreamState(ws.viewerToken, true);
+      if (!streamState.granted) ws.streamActive = false;
+      const shouldPushSports = ws.streamActive && (!ws.lastSportsPushAt || now() - ws.lastSportsPushAt >= sportsPushHeartbeatSeconds);
+      if (shouldPushSports) {
+        ws.lastSportsPushAt = now();
+        ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-heartbeat" : "viewer-heartbeat", { sendSnapshot: false });
+      }
     }
     if (promoteWaitlist(kind, shareId)) broadcastShareState(kind, shareId);
-  }, 15000);
+    if (presence.touched) broadcastShareState(kind, shareId);
+  }, viewerHeartbeatSeconds * 1000);
 
   sendJson(ws, { type: "ready" });
   sendJson(ws, { type: "chatHistory", messages: loadRecentChat(kind, shareId) });
@@ -3137,7 +3272,7 @@ function handleShareSocket(ws, req, slug) {
       ws.sportsEventId = Number(payload.sportsEventId || 0) || null;
       sendJson(ws, { type: "hello", token, viewer: viewerPublicRow(viewer) });
       if (adminUser) ensureSportsPushForSocket(ws, ws.sportsEventId, "admin-socket");
-      broadcastShareState(kind, shareId, { force: true });
+      broadcastShareState(kind, shareId);
       return;
     }
 
@@ -3181,18 +3316,27 @@ function handleShareSocket(ws, req, slug) {
 
     if (payload.type === "streamState") {
       if (!ws.viewerToken) return;
-      ws.streamActive = Boolean(payload.active);
+      const current = now();
+      const nextActive = Boolean(payload.active);
       ws.sportsEventId = Number(payload.sportsEventId || 0) || ws.sportsEventId || null;
-      const viewer = db.prepare("SELECT stream_granted_at FROM share_viewers WHERE token = ? AND kicked_at IS NULL").get(ws.viewerToken);
-      const hasRecentGrant = Number(viewer?.stream_granted_at || 0) >= now() - viewerActiveSeconds;
-      if (ws.streamActive && hasRecentGrant) {
-        db.prepare("UPDATE share_viewers SET stream_last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(now(), ws.viewerToken);
-      } else {
-        db.prepare("UPDATE share_viewers SET stream_last_seen_at = NULL, stream_granted_at = NULL WHERE token = ? AND kicked_at IS NULL").run(ws.viewerToken);
+      if (ws.streamActive === nextActive && current - Number(ws.lastStreamStateAt || 0) < streamHeartbeatSeconds) {
+        return;
       }
+      ws.lastStreamStateAt = current;
+      ws.streamActive = nextActive;
+      const streamState = updateViewerStreamState(ws.viewerToken, ws.streamActive);
+      if (streamState.kicked) {
+        sendJson(ws, { type: "kicked" });
+        ws.close();
+        return;
+      }
+      if (ws.streamActive && !streamState.granted) ws.streamActive = false;
       if (!ws.streamActive) promoteWaitlist(kind, shareId);
-      if (ws.streamActive) ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-stream" : "viewer-stream");
-      broadcastShareState(kind, shareId, { force: true });
+      if (ws.streamActive) {
+        ws.lastSportsPushAt = current;
+        ensureSportsPushForSocket(ws, ws.sportsEventId, adminUser ? "admin-stream" : "viewer-stream");
+      }
+      if (streamState.changed) broadcastShareState(kind, shareId);
     }
   });
 
@@ -3210,7 +3354,7 @@ function handleShareSocket(ws, req, slug) {
       if (!sockets.size) viewerSockets.delete(key);
     }
     promoteWaitlist(kind, shareId);
-    broadcastShareState(kind, shareId, { force: true });
+    broadcastShareState(kind, shareId);
   });
 }
 
@@ -3259,7 +3403,7 @@ function handleAdminSocket(ws, req) {
 
 if (config.nodeEnv === "production") {
   app.use(express.static(distDir));
-  app.get(["/", "/login", "/admin", "/admin/s/:shareRef", "/s/:slug"], (_req, res) => {
+  app.get(["/", "/login", "/admin", "/admin/s/:shareRef", "/s/:slug", "/:slug"], (_req, res) => {
     res.sendFile(path.join(distDir, "index.html"));
   });
 }

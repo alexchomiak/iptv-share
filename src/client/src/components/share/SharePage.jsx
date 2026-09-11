@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
-import Player from "./Player.jsx";
-import SportsPanel from "./SportsPanel.jsx";
 import StaticCountdown from "./Countdown.jsx";
 import ShareChat from "./ShareChat.jsx";
-import PastGames from "./PastGames.jsx";
+
+const Player = lazy(() => import("./Player.jsx"));
+const SportsPanel = lazy(() => import("./SportsPanel.jsx"));
+const PastGames = lazy(() => import("./PastGames.jsx"));
 
 function SharePage({ slug }) {
   const [share, setShare] = useState(null);
+  const [pastGames, setPastGames] = useState([]);
   const [message, setMessage] = useState("");
   const [sportsSummary, setSportsSummary] = useState(null);
   const [sportsMessage, setSportsMessage] = useState("");
@@ -66,12 +68,36 @@ function SharePage({ slug }) {
       return;
     }
     setShare(payload.share);
+    if (payload.share?.locked) setPastGames([]);
+    else if ((payload.share?.pastGames || []).length) setPastGames(payload.share.pastGames);
   }
 
   useEffect(() => {
     fetch(`/api/public/share/${encodeURIComponent(slug)}/open`, { method: "POST" });
+    setPastGames([]);
     loadShare();
   }, [slug]);
+
+  useEffect(() => {
+    if (!share?.past_games_url || share.locked) return undefined;
+    let cancelled = false;
+    const loadPastGames = async () => {
+      try {
+        const response = await fetch(share.past_games_url);
+        const payload = await response.json();
+        if (!cancelled && response.ok) setPastGames(payload.pastGames || []);
+      } catch {
+        if (!cancelled) setPastGames([]);
+      }
+    };
+    const idleCallback = window.requestIdleCallback || ((callback) => window.setTimeout(callback, 1200));
+    const cancelIdleCallback = window.cancelIdleCallback || window.clearTimeout;
+    const handle = idleCallback(loadPastGames);
+    return () => {
+      cancelled = true;
+      cancelIdleCallback(handle);
+    };
+  }, [share?.past_games_url, share?.locked]);
 
   useEffect(() => {
     const timer = setInterval(() => setClockNow(Date.now()), 1000);
@@ -227,16 +253,22 @@ function SharePage({ slug }) {
             )}
             {slotStatus?.status === "kicked" && <p className="waitlistNotice dangerText">You were removed from this stream.</p>}
             {share.stream_url && viewerToken && !["kicked", "waiting"].includes(slotStatus?.status) && (
-              <Player
-                key={`${viewerToken}-${playerAttempt}`}
-                src={share.stream_url}
-                hlsSrc={share.hls_url}
-                kind={share.stream_kind}
-                viewerToken={viewerToken}
-                onPlaybackActive={setStreamActive}
-              />
+              <Suspense fallback={<div className="playerLoading">Loading player...</div>}>
+                <Player
+                  key={`${viewerToken}-${playerAttempt}`}
+                  src={share.stream_url}
+                  hlsSrc={share.hls_url}
+                  kind={share.stream_kind}
+                  viewerToken={viewerToken}
+                  onPlaybackActive={setStreamActive}
+                />
+              </Suspense>
             )}
-            {(sportsSummary || sportsMessage) && <SportsPanel summary={sportsSummary} message={sportsMessage} />}
+            {(sportsSummary || sportsMessage) && (
+              <Suspense fallback={null}>
+                <SportsPanel summary={sportsSummary} message={sportsMessage} />
+              </Suspense>
+            )}
           </div>
           <ShareChat
             slug={slug}
@@ -282,7 +314,11 @@ function SharePage({ slug }) {
           );
         })}
       </section>
-      {isStaticShare && <PastGames games={share.pastGames || []} />}
+      {isStaticShare && pastGames.length > 0 && (
+        <Suspense fallback={null}>
+          <PastGames games={pastGames} />
+        </Suspense>
+      )}
     </main>
   );
 }

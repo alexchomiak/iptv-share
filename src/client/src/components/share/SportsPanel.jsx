@@ -240,6 +240,10 @@ function FootballField({ summary, model: fieldModel, play, away, home }) {
   const possessionTeam = model.possessionTeam || play?.team || ball?.team || null;
   const possession = possessionTeam?.abbreviation || "";
   const possessionLogo = possessionTeam?.logo || "";
+  const playSpotText = ball?.possessionText || ball?.downDistanceText || "";
+  const markerAthlete = footballFieldMarkerAthlete(play);
+  const markerImage = markerAthlete?.headshot || possessionLogo;
+  const markerLabel = markerAthlete?.shortName || markerAthlete?.name || possession || playSpotText || "Ball";
   const current = finiteNumber(ball?.percent);
   const firstDown = finiteNumber(model.firstDown?.percent);
   const driveStart = finiteNumber(model.driveStart?.percent);
@@ -252,7 +256,6 @@ function FootballField({ summary, model: fieldModel, play, away, home }) {
   const drivePath = Number.isFinite(driveStart) && Number.isFinite(current) && Math.abs(driveStart - current) > 0.5
     ? `M ${driveStart.toFixed(1)} 45 L ${current.toFixed(1)} 45`
     : "";
-  const playSpotText = ball?.possessionText || ball?.downDistanceText || "";
   return (
     <div className="footballField" aria-label="Current drive field position">
       <span className="footballFieldEndzone">
@@ -270,9 +273,9 @@ function FootballField({ summary, model: fieldModel, play, away, home }) {
         </svg>
         {[10, 20, 30, 40, 50, 40, 30, 20, 10].map((yard, index) => <i key={`${yard}-${index}`}>{yard}</i>)}
         {visualMarker !== null && (
-          <b className={possessionLogo ? "footballFieldMarker logoOnly" : "footballFieldMarker"} style={{ left: `${visualMarker}%` }}>
-            {possessionLogo && <img src={possessionLogo} alt="" />}
-            {!possessionLogo && <span>{possession || playSpotText || "Ball"}</span>}
+          <b className={markerImage ? "footballFieldMarker logoOnly" : "footballFieldMarker"} style={{ left: `${visualMarker}%` }}>
+            {markerImage && <img src={markerImage} alt={markerLabel} title={markerLabel} />}
+            {!markerImage && <span>{markerLabel}</span>}
           </b>
         )}
       </div>
@@ -312,8 +315,9 @@ function finiteNumber(value) {
 
 function footballDriveList(summary) {
   const isCompleted = isFinalSummary(summary);
+  const isIntermission = isFootballIntermission(summary);
   const rawCurrent = summary?.drives?.current;
-  const current = isCompleted ? null : rawCurrent;
+  const current = isCompleted || isIntermission ? null : rawCurrent;
   const currentId = String(current?.id || "");
   const previous = [...(summary?.drives?.previous || [])].filter((drive, index) => {
     if (currentId && String(drive?.id || "") === currentId) return false;
@@ -329,6 +333,32 @@ function footballDriveList(summary) {
     ...entry,
     key: `${entry.isCurrent ? "current" : "drive"}-${entry.drive.id || index}-${entry.drive.team?.id || entry.drive.team?.abbreviation || ""}`,
   }));
+}
+
+function isFootballIntermission(summary = {}) {
+  if (!summary || summary.sport === "baseball" || summary.league === "mlb" || isFinalSummary(summary)) return false;
+  const statusText = [
+    summary.status,
+    summary.statusDetail,
+    summary.shortStatusDetail,
+    summary.displayClock,
+    summary.displayPeriod,
+  ].filter(Boolean).join(" ");
+  if (/\bhalftime\b/i.test(statusText)) return true;
+  if (/\bend\s+(?:of\s+)?(?:quarter|half|period)\b/i.test(statusText)) return true;
+
+  const currentDrive = summary?.drives?.current || {};
+  const plays = Array.isArray(currentDrive.plays) ? currentDrive.plays : [];
+  const lastPlay = plays[plays.length - 1] || summary?.recentPlays?.[0] || summary?.situation?.lastPlay || {};
+  const driveText = [
+    currentDrive.result,
+    currentDrive.shortResult,
+    currentDrive.description,
+    lastPlay.type,
+    lastPlay.shortDescription,
+    lastPlay.text,
+  ].filter(Boolean).join(" ");
+  return /\bend\s+(?:of\s+)?(?:quarter|half|period)\b/i.test(driveText);
 }
 
 function footballDriveHasContent(drive = {}) {
@@ -527,6 +557,38 @@ function footballPlayKind(play = {}) {
   return "";
 }
 
+function footballFieldMarkerAthlete(play = {}) {
+  const athletes = drivePlayAthletes(play);
+  if (!athletes.length) return null;
+  const playText = [play?.type, play?.shortDescription, play?.shortText, play?.text].filter(Boolean).join(" ");
+  return athletes
+    .filter((athlete) => athlete.headshot)
+    .sort((left, right) => {
+      return footballFieldMarkerAthleteRank(left, playText) - footballFieldMarkerAthleteRank(right, playText);
+    })[0] || null;
+}
+
+function footballFieldMarkerAthleteRank(athlete = {}, playText = "") {
+  const role = String(athlete.role || "").toLowerCase().replace(/[\s_-]+/g, "");
+  const text = String(playText || "").toLowerCase();
+  if (/intercept/.test(text)) {
+    if (/intercept/.test(role)) return 0;
+    if (/return/.test(role)) return 1;
+    if (/passer/.test(role)) return 8;
+  }
+  if (/fumble/.test(text)) {
+    if (/recover/.test(role)) return 0;
+    if (/return/.test(role)) return 1;
+  }
+  if (/receiver|reception|catch/.test(role)) return 2;
+  if (/rusher|runner|scramble/.test(role)) return 3;
+  if (/return/.test(role)) return 4;
+  if (/kicker|punter/.test(role)) return 5;
+  if (/passer|quarterback/.test(role)) return 6;
+  if (/tackler|sacker|defender/.test(role)) return 7;
+  return 9;
+}
+
 function clampFieldPercent(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return null;
@@ -714,11 +776,12 @@ function statCompareValue(value, key = "") {
 
 function FootballLineScore({ summary, away, home, periodLabels }) {
   const drive = summary?.drives?.current;
+  const isIntermission = isFootballIntermission(summary);
   const field = summary?.footballField || {};
   const spot = field.ball || null;
   const possession = field.possessionTeam || drive?.team || summary?.recentPlays?.[0]?.team;
-  const driveLabel = spot?.shortDownDistanceText || spot?.downDistanceText || drive?.description || "";
-  const fieldLabel = spot?.possessionText || "";
+  const driveLabel = isIntermission ? "" : spot?.shortDownDistanceText || spot?.downDistanceText || drive?.description || "";
+  const fieldLabel = isIntermission ? "" : spot?.possessionText || "";
   return (
     <div className="gameCenter">
       <span>{gameStatusText(summary)}</span>

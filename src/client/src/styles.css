@@ -1849,6 +1849,16 @@ h2 {
   position: relative;
 }
 
+.playerLoading {
+  display: grid;
+  min-height: 320px;
+  place-items: center;
+  border-radius: 8px;
+  background: #000;
+  color: var(--muted);
+  font-weight: 800;
+}
+
 .playerStartOverlay {
   position: absolute;
   inset: 16px 20px;

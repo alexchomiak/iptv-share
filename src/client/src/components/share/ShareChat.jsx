@@ -98,7 +98,23 @@ function ShareChat({
         onViewerToken?.(payload.token);
       }
       if (payload.type === "chatHistory") setMessages(payload.messages || []);
-      if (payload.type === "chat") setMessages((current) => [...current.slice(-79), payload.message]);
+      if (payload.type === "chat") {
+        setMessages((current) => {
+          const incoming = payload.message;
+          const optimisticIndex = current.findIndex((item) => (
+            item.pending
+            && item.username === incoming.username
+            && item.message === incoming.message
+            && Math.abs(Number(item.created_at || 0) - Number(incoming.created_at || 0)) <= 10
+          ));
+          if (optimisticIndex >= 0) {
+            const next = [...current];
+            next[optimisticIndex] = incoming;
+            return next.slice(-80);
+          }
+          return [...current.slice(-79), incoming];
+        });
+      }
       if (payload.type === "presence") {
         setViewers(payload.viewers || []);
         onPresence?.(payload.viewers || []);
@@ -162,6 +178,14 @@ function ShareChat({
     event.preventDefault();
     const text = message.trim();
     if (!text || socketRef.current?.readyState !== WebSocket.OPEN) return;
+    const createdAt = Math.floor(Date.now() / 1000);
+    setMessages((current) => [...current.slice(-79), {
+      id: `pending-${createdAt}-${Math.random().toString(16).slice(2)}`,
+      username,
+      message: text,
+      created_at: createdAt,
+      pending: true,
+    }]);
     socketRef.current.send(JSON.stringify({ type: "chat", message: text }));
     setMessage("");
   }

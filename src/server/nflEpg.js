@@ -564,8 +564,8 @@ function mergeGamePrograms(sourcePrograms, fallbackPrograms = []) {
 
 function alignSourceProgramsToLocalSchedule(sourcePrograms, fallback) {
   if (!fallback) return sourcePrograms;
-  const aligned = sourcePrograms.map((program) => {
-    if (!sameMatchup(program.title, fallback.title)) return program;
+  const aligned = sourcePrograms.flatMap((program) => {
+    if (!sameMatchup(program.title, fallback.title)) return [];
     return {
       ...program,
       title: fallback.title,
@@ -682,7 +682,9 @@ export async function generatedNflMappings() {
     const slot = extractNflSlot(row.source_title) || extractNflSlot(row.name) || extractNflSlot(row.tvg_id);
     const sourcePrograms = slot ? source.programs.filter((program) => program.slot === slot) : [];
     const fallback = fallbackProgramForChannel(row, nowDate);
-    const scheduledPrograms = alignSourceProgramsToLocalSchedule(sourcePrograms, fallback ? { ...fallback, source: "m3u-title", slot } : null);
+    const scheduledPrograms = fallback
+      ? alignSourceProgramsToLocalSchedule(sourcePrograms, { ...fallback, source: "m3u-title", slot })
+      : [];
     const games = await Promise.all(
       mergeGamePrograms(scheduledPrograms)
         .map((program) => enrichGameProgram(program)),

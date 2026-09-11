@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../../lib/api.js";
 import { navigate } from "../../lib/navigation.js";
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
@@ -60,6 +60,7 @@ function AdminSharePage({ shareRef }) {
   const [sportsSummary, setSportsSummary] = useState(null);
   const [sportsMessage, setSportsMessage] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
+  const activeEventIdRef = useRef(null);
   const handleViewerToken = useCallback((token) => setViewerToken(token), []);
   const handlePresence = useCallback((nextViewers) => setViewers(nextViewers), []);
   const handleSlotStatus = useCallback(() => {}, []);
@@ -79,7 +80,7 @@ function AdminSharePage({ shareRef }) {
   }
 
   const handleSportsUpdate = useCallback((payload) => {
-    if (!payload?.summary || !payload.eventId || payload.eventId !== share?.active_event_id) return;
+    if (!payload?.summary || !payload.eventId || payload.eventId !== activeEventIdRef.current) return;
     setSportsSummary({
       ...payload.summary,
       refreshSeconds: payload.refreshSeconds,
@@ -90,6 +91,10 @@ function AdminSharePage({ shareRef }) {
     });
     setSportsMessage("");
     if (sportsSummaryIsFinal(payload.summary)) loadShare();
+  }, []);
+
+  useEffect(() => {
+    activeEventIdRef.current = share?.active_event_id || null;
   }, [share?.active_event_id]);
 
   async function loadShare({ hydrateViewers = false } = {}) {

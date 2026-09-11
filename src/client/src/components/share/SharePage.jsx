@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
 import Player from "./Player.jsx";
 import SportsPanel from "./SportsPanel.jsx";
@@ -17,7 +17,9 @@ function SharePage({ slug }) {
   const [playerAttempt, setPlayerAttempt] = useState(0);
   const [streamActive, setStreamActive] = useState(false);
   const [viewers, setViewers] = useState([]);
+  const activeEventIdRef = useRef(null);
   const handleViewerToken = useCallback((token) => setViewerToken(token), []);
+  const handlePresence = useCallback((nextViewers) => setViewers(nextViewers), []);
   const handleSlotStatus = useCallback((status) => {
     setSlotStatus(status);
     if (status?.status === "ready") setPlayerAttempt((current) => current + 1);
@@ -39,7 +41,7 @@ function SharePage({ slug }) {
   }
 
   const handleSportsUpdate = useCallback((payload) => {
-    if (!payload?.summary || !payload.eventId || payload.eventId !== share?.active_event_id) return;
+    if (!payload?.summary || !payload.eventId || payload.eventId !== activeEventIdRef.current) return;
     setSportsSummary({
       ...payload.summary,
       refreshSeconds: payload.refreshSeconds,
@@ -50,6 +52,10 @@ function SharePage({ slug }) {
     });
     setSportsMessage("");
     if (sportsSummaryIsFinal(payload.summary)) loadShare();
+  }, []);
+
+  useEffect(() => {
+    activeEventIdRef.current = share?.active_event_id || null;
   }, [share?.active_event_id]);
 
   async function loadShare() {
@@ -237,7 +243,7 @@ function SharePage({ slug }) {
             locked={share.locked}
             onViewerToken={handleViewerToken}
             onSlotStatus={handleSlotStatus}
-            onPresence={setViewers}
+            onPresence={handlePresence}
             onSportsUpdate={handleSportsUpdate}
             streamActive={streamActive}
             sportsEventId={share.active_event_id}

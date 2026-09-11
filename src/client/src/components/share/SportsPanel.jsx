@@ -574,7 +574,7 @@ function FootballLeaders({ leaders, away, home }) {
   const byTeam = new Map((leaders || []).map((entry) => [String(entry.team?.id || entry.team?.abbreviation), entry]));
   const leaderFor = (team, categoryName) => {
     const entry = byTeam.get(String(team?.team?.id)) || byTeam.get(String(team?.team?.abbreviation));
-    return entry?.leaders?.find((category) => category.name === categoryName || category.label?.replace(/\s/g, "").toLowerCase() === categoryName.toLowerCase())?.leaders?.[0] || null;
+    return entry?.leaders?.find((category) => leaderCategoryKey(category) === categoryName)?.leaders?.[0] || null;
   };
   return (
     <section className="sportsSubpanel footballLeadersPanel">
@@ -598,6 +598,20 @@ function FootballLeaders({ leaders, away, home }) {
       </div>
     </section>
   );
+}
+
+function leaderCategoryKey(category = {}) {
+  const text = [category.name, category.label, category.displayName, category.shortDisplayName]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+    .replace(/[^a-z]/g, "");
+  if (text.includes("passing") && (text.includes("yard") || text.includes("yds") || text.includes("leader"))) return "passingYards";
+  if (text.includes("rushing") && (text.includes("yard") || text.includes("yds") || text.includes("leader"))) return "rushingYards";
+  if (text.includes("receiving") && (text.includes("yard") || text.includes("yds") || text.includes("leader"))) return "receivingYards";
+  if (text.includes("sack")) return "sacks";
+  if (text.includes("tackle")) return "totalTackles";
+  return text;
 }
 
 function LeaderSide({ leader, right = false }) {

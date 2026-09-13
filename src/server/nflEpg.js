@@ -684,11 +684,19 @@ export async function generatedNflMappings() {
     const fallback = fallbackProgramForChannel(row, nowDate);
     const scheduledPrograms = fallback
       ? alignSourceProgramsToLocalSchedule(sourcePrograms, { ...fallback, source: "m3u-title", slot })
-      : [];
-    const games = await Promise.all(
+      : sourcePrograms.flatMap((program) => {
+          // A bare local slot can still have a matchup in the source feed.
+          // Its XMLTV rows repeat through the day, so infer kickoff from the
+          // source label and require ESPN confirmation before publishing it.
+          const sourceSchedule = parseNflM3uTitle(program.channelName, nowDate);
+          if (!sourceSchedule || !sameMatchup(program.title, sourceSchedule.title)) return [];
+          return { ...program, ...sourceSchedule, slot, source: "ganja" };
+        });
+    const enrichedGames = await Promise.all(
       mergeGamePrograms(scheduledPrograms)
         .map((program) => enrichGameProgram(program)),
     );
+    const games = fallback ? enrichedGames : enrichedGames.filter((program) => program.espnEventId);
     const programs = slot ? expandedDailyPrograms(games, { slot, channelName: row.name, nowDate }) : [];
     return {
       channel: {

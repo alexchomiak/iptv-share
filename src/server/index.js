@@ -9,6 +9,7 @@ import { WebSocketServer } from "ws";
 import { config } from "./config.js";
 import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
+import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
@@ -470,7 +471,7 @@ function updateViewerStreamState(token, active) {
   if (active && hasRecentGrant) {
     const stale = Number(viewer.stream_last_seen_at || 0) < current - streamHeartbeatSeconds;
     if (stale || !wasStreaming) {
-      db.prepare("UPDATE share_viewers SET stream_last_seen_at = ? WHERE token = ? AND kicked_at IS NULL").run(current, token);
+      db.prepare("UPDATE share_viewers SET stream_last_seen_at = ?, stream_granted_at = ? WHERE token = ? AND kicked_at IS NULL").run(current, current, token);
     }
     return { found: true, kicked: false, changed: !wasStreaming, granted: true };
   }
@@ -747,7 +748,7 @@ function storeEspnGameSnapshot(payload) {
     DO UPDATE SET payload = excluded.payload, created_at = excluded.created_at
   `,
   ).run(identity.league, identity.eventId, payload.source || "espn", JSON.stringify(payload.summary), fetchedAt, now());
-  db.prepare("DELETE FROM espn_game_snapshots WHERE created_at < ?").run(now() - 86400);
+  cleanExpiredEspnSnapshots(db, now);
   return true;
 }
 
@@ -923,27 +924,29 @@ async function runSportsTrackerTick() {
   if (sportsTrackerTickRunning) return;
   sportsTrackerTickRunning = true;
   try {
-    for (const event of loadTrackableStaticSportsEvents()) {
-      ensureStaticSportsLiveFeed(event, "tracker");
-      const league = normalizeEspnSnapshotLeague(event.espn_league || "mlb");
-      const fallbackSeconds = espnSummaryRefreshSeconds(league);
-      const latest = newestEspnSnapshot(event);
-      if (latest && now() - Number(latest.fetched_at || 0) < fallbackSeconds) continue;
-      try {
-        const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
-        storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
-        const payload = delayedSportsPayload("static", event.static_share_id, event.id, sportsUpdatePayload("static", event.static_share_id, event.id, {
-          summary: result.summary,
-          fetchedAt: result.fetchedAt,
-          source: result.source || "summary",
-        }));
-        if (payload) sendSportsPayload("static", event.static_share_id, payload);
-      } catch (error) {
-        console.error(`Sports tracker failed for ${league}:${event.espn_event_id}: ${error.message}`);
-      }
-    }
+    await Promise.all(loadTrackableStaticSportsEvents().map((event) => refreshTrackedEvent(event)));
   } finally {
     sportsTrackerTickRunning = false;
+  }
+}
+
+async function refreshTrackedEvent(event) {
+  ensureStaticSportsLiveFeed(event, "tracker");
+  const league = normalizeEspnSnapshotLeague(event.espn_league || "mlb");
+  const fallbackSeconds = espnSummaryRefreshSeconds(league);
+  const latest = newestEspnSnapshot(event);
+  if (latest && now() - Number(latest.fetched_at || 0) < fallbackSeconds) return;
+  try {
+    const result = await getEspnGameSummary({ league, eventId: event.espn_event_id });
+    storeFinalSportsSummary(event.id, result.summary, result.fetchedAt);
+    const payload = delayedSportsPayload("static", event.static_share_id, event.id, sportsUpdatePayload("static", event.static_share_id, event.id, {
+      summary: result.summary,
+      fetchedAt: result.fetchedAt,
+      source: result.source || "summary",
+    }));
+    if (payload) sendSportsPayload("static", event.static_share_id, payload);
+  } catch (error) {
+    console.error(`Sports tracker failed for ${league}:${event.espn_event_id}: ${error.message}`);
   }
 }
 
@@ -1310,8 +1313,12 @@ async function scheduledEventIsStreamable(event, options = {}) {
 }
 
 async function findActiveStaticEvent(shareId, options = {}) {
-  for (const event of candidateStaticEvents(shareId)) {
-    if (await scheduledEventIsStreamable(event, options)) return event;
+  const events = candidateStaticEvents(shareId);
+  if (options.allowNetwork === false) {
+    return events.find((event) => resolveScheduledStreamEntitlementFromSnapshot(event).streamable) || null;
+  }
+  for (const event of events) {
+    if (await scheduledEventIsStreamable(event)) return event;
   }
   return null;
 }
@@ -2038,8 +2045,8 @@ app.get("/api/admin/stream/:ref", requireAuth, async (req, res) => {
             WHERE static_share_events.static_share_id = ? AND static_share_events.id = ?
           `,
           )
-          .get(resolved.share.id, req.query.event)
-      : await findActiveStaticEvent(resolved.share.id);
+           .get(resolved.share.id, req.query.event)
+       : await findActiveStaticEvent(resolved.share.id);
     const entitlement = event ? await resolveScheduledStreamEntitlement(event) : null;
     if (!entitlement?.streamable) {
       res.status(403).send("Scheduled event is not currently streamable");
@@ -3082,8 +3089,8 @@ app.get("/api/public/stream/:slug", async (req, res) => {
             WHERE static_share_events.static_share_id = ? AND static_share_events.id = ?
           `,
           )
-          .get(staticShare.id, req.query.event)
-      : await findActiveStaticEvent(staticShare.id);
+           .get(staticShare.id, req.query.event)
+       : await findActiveStaticEvent(staticShare.id);
     const entitlement = event ? await resolveScheduledStreamEntitlement(event) : null;
     if (!entitlement?.streamable) {
       res.status(403).send("Scheduled event is not currently streamable");
@@ -3409,12 +3416,11 @@ if (config.nodeEnv === "production") {
 }
 
 initDb();
-try {
-  await refreshSources();
-} catch (error) {
-  console.error(`Initial guide refresh failed: ${error.message}`);
-}
-runSportsTrackerTick();
+setImmediate(() => {
+  refreshSources()
+    .catch((error) => console.error(`Initial guide refresh failed: ${error.message}`))
+    .then(() => runSportsTrackerTick());
+});
 
 setInterval(async () => {
   cleanupExpiredShares();

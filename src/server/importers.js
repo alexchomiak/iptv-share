@@ -25,7 +25,7 @@ function parseChannelSort(channelNumber, playlistIndex) {
 
 async function readUrlOrFile(source) {
   if (source.startsWith("http://") || source.startsWith("https://")) {
-    const response = await fetch(source, { headers: { "User-Agent": "iptv-share/0.2" } });
+    const response = await fetch(source, { headers: { "User-Agent": "iptv-share/0.2" }, signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`Could not fetch ${source}: ${response.status}`);
     return response.text();
   }

@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import React, { Suspense, lazy } from "react";
 import { useLocationPath } from "./lib/navigation.js";
 import "./styles.css";
+import LoadingSpinner from "./components/LoadingSpinner.jsx";
 
 const AdminPage = lazy(() => import("./components/admin/AdminPage.jsx"));
 const AdminSharePage = lazy(() => import("./components/admin/AdminSharePage.jsx"));
@@ -18,7 +19,12 @@ function Root() {
   else if (path.startsWith("/s/")) page = <SharePage slug={decodeURIComponent(path.split("/").pop())} />;
   else if (path !== "/") page = <SharePage slug={decodeURIComponent(path.slice(1))} />;
   else page = <AppGuide />;
-  return <Suspense fallback={<main className="shareShell"><h1>Loading...</h1></main>}>{page}</Suspense>;
+
+  return (
+    <Suspense fallback={<LoadingSpinner />}>
+      {page}
+    </Suspense>
+  );
 }
 
 createRoot(document.getElementById("root")).render(<Root />);

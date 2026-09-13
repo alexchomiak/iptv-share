@@ -45,40 +45,62 @@ function parseNestedJsonPayload(payload) {
   return payload;
 }
 
+const espnInFlight = new Map();
+
+function parsedCacheRow(row, cache) {
+  return { payload: parseNestedJsonPayload(JSON.parse(row.payload)), cache, fetchedAt: row.fetched_at };
+}
+
 export async function fetchJsonCached(url, ttlSeconds) {
   pruneEspnCache();
   const key = cacheKey(url);
-  const cached = db.prepare("SELECT * FROM espn_cache WHERE cache_key = ?").get(key);
-  if (cached && cached.expires_at > now()) {
-    return { payload: parseNestedJsonPayload(JSON.parse(cached.payload)), cache: "hit", fetchedAt: cached.fetched_at };
+  const inflight = espnInFlight.get(key);
+  if (inflight) {
+    return inflight;
   }
-  if (requestCountToday() >= config.espnMaxRequestsPerDay) {
-    if (cached) return { payload: parseNestedJsonPayload(JSON.parse(cached.payload)), cache: "stale", fetchedAt: cached.fetched_at };
-    throw new Error("Local ESPN daily request limit reached");
-  }
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/json,text/plain,*/*",
-      "User-Agent": "Mozilla/5.0 ShareTV/1.0",
-    },
+  const request = (async () => {
+    const cached = db.prepare("SELECT * FROM espn_cache WHERE cache_key = ?").get(key);
+    if (cached && cached.expires_at > now()) {
+      return parsedCacheRow(cached, "hit");
+    }
+    if (requestCountToday() >= config.espnMaxRequestsPerDay) {
+      if (cached) return parsedCacheRow(cached, "stale");
+      throw new Error("Local ESPN daily request limit reached");
+    }
+    let payload;
+    try {
+      const response = await fetch(url, {
+        headers: {
+          Accept: "application/json,text/plain,*/*",
+          "User-Agent": "Mozilla/5.0 ShareTV/1.0",
+        },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) {
+        throw new Error(`ESPN returned ${response.status}`);
+      }
+      payload = parseNestedJsonPayload(await response.json());
+    } catch (error) {
+      if (cached) return parsedCacheRow(cached, "stale");
+      throw error;
+    }
+    db.prepare(
+      `
+      INSERT INTO espn_cache(cache_key, url, payload, fetched_at, expires_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(cache_key) DO UPDATE SET
+        payload = excluded.payload,
+        fetched_at = excluded.fetched_at,
+        expires_at = excluded.expires_at
+    `,
+    ).run(key, url, JSON.stringify(payload), now(), now() + ttlSeconds);
+    db.prepare("INSERT INTO espn_request_log(cache_key, requested_at) VALUES (?, ?)").run(key, now());
+    return { payload, cache: "miss", fetchedAt: now() };
+  })().finally(() => {
+    espnInFlight.delete(key);
   });
-  if (!response.ok) {
-    if (cached) return { payload: parseNestedJsonPayload(JSON.parse(cached.payload)), cache: "stale", fetchedAt: cached.fetched_at };
-    throw new Error(`ESPN returned ${response.status}`);
-  }
-  const payload = parseNestedJsonPayload(await response.json());
-  db.prepare(
-    `
-    INSERT INTO espn_cache(cache_key, url, payload, fetched_at, expires_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(cache_key) DO UPDATE SET
-      payload = excluded.payload,
-      fetched_at = excluded.fetched_at,
-      expires_at = excluded.expires_at
-  `,
-  ).run(key, url, JSON.stringify(payload), now(), now() + ttlSeconds);
-  db.prepare("INSERT INTO espn_request_log(cache_key, requested_at) VALUES (?, ?)").run(key, now());
-  return { payload, cache: "miss", fetchedAt: now() };
+  espnInFlight.set(key, request);
+  return request;
 }
 
 function compactTeam(competitor) {

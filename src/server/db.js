@@ -168,6 +168,7 @@ export function initDb() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_espn_snapshots_unique ON espn_game_snapshots(league, event_id, source, fetched_at);
     CREATE INDEX IF NOT EXISTS idx_espn_snapshots_lookup ON espn_game_snapshots(league, event_id, fetched_at);
+    CREATE INDEX IF NOT EXISTS idx_espn_snapshots_created ON espn_game_snapshots(created_at);
     CREATE TABLE IF NOT EXISTS espn_request_log (
       id INTEGER PRIMARY KEY,
       cache_key TEXT NOT NULL,

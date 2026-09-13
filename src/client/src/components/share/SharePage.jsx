@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
 import StaticCountdown from "./Countdown.jsx";
 import ShareChat from "./ShareChat.jsx";
+import LoadingSpinner from "../LoadingSpinner.jsx";
 
 const Player = lazy(() => import("./Player.jsx"));
 const SportsPanel = lazy(() => import("./SportsPanel.jsx"));
@@ -193,7 +194,7 @@ function SharePage({ slug }) {
   }
 
   if (!share) {
-    return <main className="shareShell"><h1>{message || "Loading..."}</h1></main>;
+    return <LoadingSpinner label={message || "Loading..."} />;
   }
 
   const hasWindow = Number(share.starts_at) && Number(share.ends_at);

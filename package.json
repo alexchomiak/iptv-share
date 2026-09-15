@@ -12,7 +12,7 @@
     "build": "vite build",
     "start": "node src/server/index.js",
     "check": "npm run build",
-    "test": "node --test test/espn_cache.test.mjs test/snapshot_cleanup.test.mjs test/nfl_epg.test.mjs"
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",

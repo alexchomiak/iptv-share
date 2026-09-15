@@ -154,16 +154,26 @@ function sessionId(slug, targetUrl) {
   return crypto.createHash("sha256").update(`${slug}:${targetUrl}`).digest("base64url").slice(0, 48);
 }
 
-function waitForFile(file, timeoutMs = 10000) {
+export function createHlsSessionDirectory(id, temporaryRoot = os.tmpdir()) {
+  const root = path.join(temporaryRoot, "iptv-share-hls");
+  fs.mkdirSync(root, { recursive: true });
+  return fs.mkdtempSync(path.join(root, `${id}-`));
+}
+
+function waitForHlsPlaylist(session, timeoutMs = 10000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
     const check = () => {
-      if (fs.existsSync(file)) {
+      if (fs.existsSync(session.playlistPath)) {
         resolve();
         return;
       }
+      if (session.process.exitCode !== null || session.process.signalCode) {
+        reject(new Error(session.stderr?.trim() || "FFmpeg exited before creating the HLS playlist"));
+        return;
+      }
       if (Date.now() - started > timeoutMs) {
-        reject(new Error("Timed out waiting for HLS playlist"));
+        reject(new Error(session.stderr?.trim() || "Timed out waiting for HLS playlist"));
         return;
       }
       setTimeout(check, 250);
@@ -318,9 +328,7 @@ async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow) {
     return existing;
   }
 
-  const dir = path.join(os.tmpdir(), "iptv-share-hls", id);
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = createHlsSessionDirectory(id);
   const { inputArgs, outputArgs, codecs, videoMode, audioMode } = await hlsCodecArgs(targetUrl);
   const playlistPath = path.join(dir, "index.m3u8");
   const ffmpeg = spawn(
@@ -401,7 +409,7 @@ function rewriteLocalHlsPlaylist(playlist, req, session) {
 
 export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWindow) {
   const session = await getOrCreateHlsSession(targetUrl, slug, cutoffWindow);
-  await waitForFile(session.playlistPath);
+  await waitForHlsPlaylist(session);
   session.lastAccessed = Date.now();
   const playlist = await waitForPlaylistSegments(session);
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");

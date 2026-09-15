@@ -24,6 +24,13 @@ export function signStreamTarget(slug, targetUrl) {
   return crypto.createHmac("sha256", config.sessionSecret).update(`stream:${slug}:${targetUrl}`).digest("hex");
 }
 
+export function signViewerAccess(kind, shareId, token) {
+  return crypto
+    .createHmac("sha256", config.sessionSecret)
+    .update(`viewer:${kind}:${shareId}:${token}`)
+    .digest("hex");
+}
+
 export function safeCompare(left, right) {
   const a = Buffer.from(left || "");
   const b = Buffer.from(right || "");

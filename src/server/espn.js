@@ -3,6 +3,7 @@ import zlib from "node:zlib";
 import { WebSocket } from "ws";
 import { config } from "./config.js";
 import { db } from "./db.js";
+import { liveSummaryLooksPartial } from "./sportsUpdateQuality.js";
 
 const LEAGUES = {
   nfl: { sport: "football", league: "nfl", label: "NFL" },
@@ -1312,6 +1313,10 @@ function applyFastcastEventPatches(feed, batch = {}) {
     return false;
   }
   feed.lastPayload = nextPayload;
+  if (liveSummaryLooksPartial(feed.lastSummary, summary)) {
+    feed.lastPatchError = "Held incomplete FastCast patch until the next full checkpoint";
+    return false;
+  }
   feed.lastSummary = summary;
   feed.lastFetchedAt = Math.max(now(), Math.floor((Number(batch.ts || 0) || 0) / 1000));
   for (const watcher of feed.watchers.values()) {

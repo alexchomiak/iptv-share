@@ -13,7 +13,7 @@ services:
       DATABASE_PATH: /data/app.sqlite
       M3U_URL: http://192.168.0.37:9191/output/m3u
       EPG_URL: http://192.168.0.37:9191/output/epg
-      PUBLIC_BASE_URL: http://localhost:8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       SHARE_AUTO_DELETE_SECONDS: 300
       TRANSCODE_MPEGTS: "true"
       FFMPEG_HWACCEL: none

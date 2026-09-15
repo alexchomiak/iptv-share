@@ -11,6 +11,8 @@ import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
 import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
+import { addPlatformMediaSource } from "./platformSources.js";
+import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
   espnFastcastDebug,
@@ -604,6 +606,20 @@ function requestViewerStream(kind, shareId, token) {
   return { ok: true };
 }
 
+function registerSignedStreamViewer(kind, shareId, token, signature) {
+  const shareKind = shareKindColumn(kind);
+  return registerSignedViewer({
+    kind: shareKind,
+    shareId,
+    token,
+    signature,
+    findViewer: (viewerToken, viewerKind, viewerShareId) => db
+      .prepare("SELECT id FROM share_viewers WHERE token = ? AND share_kind = ? AND share_id = ?")
+      .get(viewerToken, viewerKind, viewerShareId),
+    registerViewer: (viewerToken) => upsertViewer(shareKind, shareId, viewerToken, "External player"),
+  });
+}
+
 function sendJson(ws, payload) {
   if (ws.readyState === 1) ws.send(JSON.stringify(payload));
 }
@@ -931,7 +947,8 @@ async function runSportsTrackerTick() {
 }
 
 async function refreshTrackedEvent(event) {
-  ensureStaticSportsLiveFeed(event, "tracker");
+  const fastcastFeed = ensureStaticSportsLiveFeed(event, "tracker");
+  if (fastcastIsReady(fastcastFeed)) return;
   const league = normalizeEspnSnapshotLeague(event.espn_league || "mlb");
   const fallbackSeconds = espnSummaryRefreshSeconds(league);
   const latest = newestEspnSnapshot(event);
@@ -953,8 +970,9 @@ async function refreshTrackedEvent(event) {
 async function warmStaticSportsSnapshot(event, reason = "warm") {
   if (!event?.static_share_id || !event?.id || !event?.espn_event_id) return null;
   const league = normalizeEspnSnapshotLeague(event.espn_league || "nfl");
-  ensureStaticSportsLiveFeed(event, reason);
+  const fastcastFeed = ensureStaticSportsLiveFeed(event, reason);
   const latest = newestEspnSnapshot(event);
+  if (fastcastIsReady(fastcastFeed)) return latest;
   const freshnessSeconds = Math.min(espnSummaryRefreshSeconds(league), Math.max(15, espnFastcastRefreshSeconds(league) * 3));
   if (latest && now() - Number(latest.fetched_at || 0) < freshnessSeconds) return latest;
   const key = `static:${event.static_share_id}:event:${event.id}`;
@@ -1888,7 +1906,7 @@ async function adminSafeStaticShare(share) {
   const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
   const { password_hash: _passwordHash, ...payload } = share;
-  return {
+  const result = {
     ...payload,
     kind: "static",
     has_password: Boolean(share.password_hash),
@@ -1910,6 +1928,7 @@ async function adminSafeStaticShare(share) {
     viewers: loadViewers("static", share.id),
     messages: loadRecentChat("static", share.id),
   };
+  return addPlatformMediaSource(result, activeEvent?.stream_url);
 }
 
 function adminSafeTemporaryShare(share) {
@@ -1934,7 +1953,7 @@ function adminSafeTemporaryShare(share) {
       ...program,
       icon_url: program.icon ? `/api/public/program-image/${encodeURIComponent(share.slug)}/${program.id}` : null,
     }));
-  return {
+  const result = {
     ...payload,
     kind: "temporary",
     has_password: Boolean(share.password_hash),
@@ -1950,6 +1969,7 @@ function adminSafeTemporaryShare(share) {
     viewers: loadViewers("temporary", share.id),
     messages: loadRecentChat("temporary", share.id),
   };
+  return addPlatformMediaSource(result, activeProgram?.stream_url || share.stream_url);
 }
 
 async function loadAdminShareByRef(ref) {
@@ -2841,9 +2861,13 @@ app.get("/api/public/share/:slug", async (req, res) => {
     payload.starts_at = activeEvent?.starts_at || events[0]?.starts_at || null;
     payload.ends_at = activeEvent?.ends_at || events.at(-1)?.ends_at || null;
     payload.stream_available = Boolean(activeEvent);
-    payload.stream_url = activeEvent ? `/api/public/stream/${encodeURIComponent(staticShare.slug)}?event=${activeEvent.id}` : null;
-    payload.hls_url = activeEvent && useFmp4 ? `/api/public/stream/${encodeURIComponent(staticShare.slug)}?event=${activeEvent.id}&hls=1` : null;
+    const playback = activeEvent
+      ? publicStreamUrls(req, { kind: "static", shareId: staticShare.id, slug: staticShare.slug, eventId: activeEvent.id, useHls: useFmp4 })
+      : null;
+    payload.stream_url = playback?.streamUrl || null;
+    payload.hls_url = playback?.hlsUrl || null;
     payload.stream_kind = activeEvent ? streamKind : null;
+    addPlatformMediaSource(payload, activeEvent?.stream_url);
     res.json({ share: payload });
     return;
   }
@@ -2881,9 +2905,13 @@ app.get("/api/public/share/:slug", async (req, res) => {
   payload.stream_available = !locked && (share.mode === "programs" ? Boolean(activeProgram) : shareIsStreamable(share));
   const streamKind = inferStreamKind(activeProgram?.stream_url || share.stream_url);
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
-  payload.stream_url = payload.stream_available ? `/api/public/stream/${encodeURIComponent(share.slug)}` : null;
-  payload.hls_url = payload.stream_available && useFmp4 ? `/api/public/stream/${encodeURIComponent(share.slug)}?hls=1` : null;
+  const playback = payload.stream_available
+    ? publicStreamUrls(req, { kind: "temporary", shareId: share.id, slug: share.slug, useHls: useFmp4 })
+    : null;
+  payload.stream_url = playback?.streamUrl || null;
+  payload.hls_url = playback?.hlsUrl || null;
   payload.stream_kind = payload.stream_available ? streamKind : null;
+  addPlatformMediaSource(payload, activeProgram?.stream_url || share.stream_url);
   res.json({ share: payload });
 });
 
@@ -3097,6 +3125,7 @@ app.get("/api/public/stream/:slug", async (req, res) => {
       return;
     }
     const viewerToken = String(req.query.viewer || "");
+    registerSignedStreamViewer("static", staticShare.id, viewerToken, String(req.query.vsig || ""));
     const viewerAccess = requestViewerStream("static", staticShare.id, viewerToken);
     if (!viewerAccess.ok) {
       if (viewerAccess.waiting) res.setHeader("X-IPTV-Share-Waitlist-Position", String(viewerAccess.position || ""));
@@ -3155,6 +3184,7 @@ app.get("/api/public/stream/:slug", async (req, res) => {
     return;
   }
   const viewerToken = String(req.query.viewer || "");
+  registerSignedStreamViewer("temporary", share.id, viewerToken, String(req.query.vsig || ""));
   const viewerAccess = requestViewerStream("temporary", share.id, viewerToken);
   if (!viewerAccess.ok) {
     if (viewerAccess.waiting) res.setHeader("X-IPTV-Share-Waitlist-Position", String(viewerAccess.position || ""));

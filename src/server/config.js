@@ -27,6 +27,10 @@ export const config = {
   transcodeMpegTs: process.env.TRANSCODE_MPEGTS !== "false",
   ffmpegHwaccel: String(process.env.FFMPEG_HWACCEL || "none").toLowerCase(),
   ffmpegVaapiDevice: process.env.FFMPEG_VAAPI_DEVICE || "/dev/dri/renderD128",
+  platformMediaHosts: (process.env.PLATFORM_MEDIA_HOSTS || "twitch.tv,tmuxapp.com,youtube.com,youtu.be,facebook.com,instagram.com,tiktok.com")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean),
   espnSearchCacheSeconds: Number(process.env.ESPN_SEARCH_CACHE_SECONDS || 21600),
   espnLiveCacheSeconds: numberEnv("ESPN_LIVE_CACHE_SECONDS", 60),
   espnLiveCacheSecondsByLeague: {

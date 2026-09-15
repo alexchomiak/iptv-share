@@ -71,6 +71,7 @@ SHARE_AUTO_DELETE_SECONDS=300
 TRANSCODE_MPEGTS=true
 FFMPEG_HWACCEL=none
 FFMPEG_VAAPI_DEVICE=/dev/dri/renderD128
+PLATFORM_MEDIA_HOSTS=twitch.tv,tmuxapp.com,youtube.com,youtu.be,facebook.com,instagram.com,tiktok.com
 ESPN_SEARCH_CACHE_SECONDS=21600
 ESPN_LIVE_CACHE_SECONDS=60
 ESPN_LIVE_CACHE_SECONDS_NFL=60
@@ -83,6 +84,10 @@ PORT=8080
 ```
 
 Mount `/data` as persistent storage.
+
+For a currently streamable channel whose source is a platform page on `PLATFORM_MEDIA_HOSTS`, the share API includes that original page as optional `media_url` with `media_kind: "platform"`. A machine consumer can pass it to its own `yt-dlp`.
+
+The public share API returns `stream_url` and `hls_url` as absolute URLs with a signed viewer credential. They can be passed directly to players such as `ffplay`. Set `PUBLIC_BASE_URL` to the externally reachable HTTPS origin in production; when it is empty, the API uses the request origin.
 
 ## Local Dev Without Docker
 

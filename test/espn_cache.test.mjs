@@ -12,7 +12,7 @@ process.on("exit", () => rmSync(tmpDir, { recursive: true, force: true }));
 
 const { db, initDb } = await import("../src/server/db.js");
 initDb();
-const { fetchJsonCached } = await import("../src/server/espn.js");
+const { fetchJsonCached, searchEspnGames } = await import("../src/server/espn.js");
 
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 const now = () => Math.floor(Date.now() / 1000);
@@ -222,4 +222,28 @@ test("EXPLAIN QUERY PLAN uses the new created_at index", () => {
   const rows = db.prepare("EXPLAIN QUERY PLAN SELECT id FROM espn_game_snapshots WHERE created_at < ?").all(1000);
   const text = rows.map((r) => r.detail).join(" | ");
   assert.match(text, /idx_espn_snapshots_created/, `expected created_at index in plan: ${text}`);
+});
+
+test("scoreboard searches use supported daily requests and tolerate a failed day", async () => {
+  clearCaches();
+  const requestedDates = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const date = new URL(url).searchParams.get("dates");
+    requestedDates.push(date);
+    if (date === "20260918") return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ events: [] }) };
+  };
+  try {
+    const result = await searchEspnGames({
+      league: "nfl",
+      start: Date.parse("2026-09-17T12:00:00Z") / 1000,
+      end: Date.parse("2026-09-19T12:00:00Z") / 1000,
+      ttlSeconds: 60,
+    });
+    assert.deepEqual(requestedDates.sort(), ["20260917", "20260918", "20260919"]);
+    assert.deepEqual(result.games, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

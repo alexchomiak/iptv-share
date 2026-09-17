@@ -28,9 +28,11 @@ const DAY_ALIASES = {
 
 let sourceCache = {
   fetchedAt: 0,
+  retryAfter: 0,
   programs: [],
   error: "",
 };
+let sourceFetchInFlight = null;
 const enrichmentCache = new Map();
 
 const GENERATED_DAYS = 14;
@@ -416,7 +418,10 @@ function localNflChannels() {
 
 async function fetchSourceText() {
   if (!config.nflMapperSourceUrl) return "";
-  const response = await fetch(config.nflMapperSourceUrl, { headers: { "User-Agent": "ShareTV NFL EPG mapper/0.1" } });
+  const response = await fetch(config.nflMapperSourceUrl, {
+    headers: { "User-Agent": "ShareTV NFL EPG mapper/0.1" },
+    signal: AbortSignal.timeout(30000),
+  });
   if (!response.ok) throw new Error(`NFL mapper source failed: ${response.status}`);
   const buffer = Buffer.from(await response.arrayBuffer());
   const inflated = config.nflMapperSourceUrl.endsWith(".gz") || (buffer[0] === 0x1f && buffer[1] === 0x8b)
@@ -430,8 +435,9 @@ function normalizeGanjaProgram(program, channelName, slot) {
   if (isNoiseProgram(title)) return null;
   const startAt = parseXmltvTime(program["@_start"]);
   if (!startAt) return null;
+  const sourceSchedule = parseNflM3uTitle(channelName);
   const description = xmlText(asArray(program.desc)[0]);
-  const cleanTitle = stripNflPrefix(title) || title;
+  const cleanTitle = sourceSchedule?.title || stripNflPrefix(title) || title;
   if (isEmptySlotTitle(cleanTitle)) return null;
   const displayTitle = displayMatchup(cleanTitle);
   const subtitle = xmlText(asArray(program["sub-title"])[0]) || "NFL Football";
@@ -442,7 +448,9 @@ function normalizeGanjaProgram(program, channelName, slot) {
     channelName,
     title: displayTitle,
     subtitle,
-    description: description && !isNoiseProgram(description) ? description : `${displayTitle}. Kickoff window starts ${formatMapperDateTime(startAt)}.`,
+    description: description && !isNoiseProgram(description)
+      ? description
+      : sourceSchedule?.description || `${displayTitle}. Kickoff window starts ${formatMapperDateTime(startAt)}.`,
     category: xmlText(asArray(program.category)[0]) || "Sports",
     icon,
     startAt,
@@ -458,8 +466,8 @@ async function enrichGameProgram(program) {
   if (cached && cached.expiresAt > current) return { ...program, ...cached.patch };
 
   try {
-    const searchStart = program.startAt - 7 * 24 * 60 * 60;
-    const searchEnd = program.startAt + 7 * 24 * 60 * 60;
+    const searchStart = program.startAt - 24 * 60 * 60;
+    const searchEnd = program.startAt + 24 * 60 * 60;
     const { games } = await searchEspnGames({
       league: "nfl",
       q: program.title,
@@ -500,38 +508,49 @@ async function enrichGameProgram(program) {
 async function ganjaPrograms() {
   const current = Math.floor(Date.now() / 1000);
   if (sourceCache.fetchedAt && sourceCache.fetchedAt + config.nflMapperSourceCacheSeconds > current) return sourceCache;
-  try {
-    const text = await fetchSourceText();
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-      textNodeName: "#text",
-      processEntities: false,
-    });
-    const xml = parser.parse(text);
-    const tv = xml.tv || {};
-    const channelNames = new Map();
-    for (const channel of asArray(tv.channel)) {
-      const id = channel["@_id"];
-      const names = asArray(channel["display-name"]).map(xmlText).filter(Boolean);
-      if (id) channelNames.set(id, names[0] || id);
+  if (sourceCache.retryAfter > current) return sourceCache;
+  if (sourceFetchInFlight) return sourceFetchInFlight;
+  sourceFetchInFlight = (async () => {
+    try {
+      const text = await fetchSourceText();
+      const parser = new XMLParser({
+        ignoreAttributes: false,
+        attributeNamePrefix: "@_",
+        textNodeName: "#text",
+        processEntities: false,
+      });
+      const xml = parser.parse(text);
+      const tv = xml.tv || {};
+      const channelNames = new Map();
+      for (const channel of asArray(tv.channel)) {
+        const id = channel["@_id"];
+        const names = asArray(channel["display-name"]).map(xmlText).filter(Boolean);
+        const scheduleName = names.find((name) => parseNflM3uTitle(name))
+          || names.find((name) => extractNflSlot(name))
+          || names[0]
+          || id;
+        if (id) channelNames.set(id, scheduleName);
+      }
+      const programs = asArray(tv.programme)
+        .map((program) => {
+          const channelKey = program["@_channel"] || "";
+          const channelName = channelNames.get(channelKey) || channelKey;
+          const slot = extractNflSlot(channelName) || extractNflSlot(channelKey) || extractNflSlot(xmlText(asArray(program.title)[0]));
+          if (!slot) return null;
+          return normalizeGanjaProgram(program, channelName, slot);
+        })
+        .filter(Boolean)
+        .filter((program) => program.endAt >= current - 12 * 60 * 60 && program.startAt <= current + 14 * 24 * 60 * 60)
+        .sort((a, b) => a.startAt - b.startAt);
+      sourceCache = { fetchedAt: current, retryAfter: 0, programs, error: "" };
+    } catch (error) {
+      sourceCache = { ...sourceCache, retryAfter: current + 300, error: error.message };
     }
-    const programs = asArray(tv.programme)
-      .map((program) => {
-        const channelKey = program["@_channel"] || "";
-        const channelName = channelNames.get(channelKey) || channelKey;
-        const slot = extractNflSlot(channelName) || extractNflSlot(channelKey) || extractNflSlot(xmlText(asArray(program.title)[0]));
-        if (!slot) return null;
-        return normalizeGanjaProgram(program, channelName, slot);
-      })
-      .filter(Boolean)
-      .filter((program) => program.endAt >= current - 12 * 60 * 60 && program.startAt <= current + 14 * 24 * 60 * 60)
-      .sort((a, b) => a.startAt - b.startAt);
-    sourceCache = { fetchedAt: current, programs, error: "" };
-  } catch (error) {
-    sourceCache = { ...sourceCache, fetchedAt: current, error: error.message };
-  }
-  return sourceCache;
+    return sourceCache;
+  })().finally(() => {
+    sourceFetchInFlight = null;
+  });
+  return sourceFetchInFlight;
 }
 
 function fallbackProgramForChannel(row, nowDate) {
@@ -685,9 +704,9 @@ export async function generatedNflMappings() {
     const scheduledPrograms = fallback
       ? alignSourceProgramsToLocalSchedule(sourcePrograms, { ...fallback, source: "m3u-title", slot })
       : sourcePrograms.flatMap((program) => {
-          // A bare local slot can still have a matchup in the source feed.
-          // Its XMLTV rows repeat through the day, so infer kickoff from the
-          // source label and require ESPN confirmation before publishing it.
+          // A bare local slot can still have an explicit matchup assignment in
+          // the source feed. Its XMLTV rows repeat through the day, so infer one
+          // kickoff from the source label and let ESPN enrich it when available.
           const sourceSchedule = parseNflM3uTitle(program.channelName, nowDate);
           if (!sourceSchedule || !sameMatchup(program.title, sourceSchedule.title)) return [];
           return { ...program, ...sourceSchedule, slot, source: "ganja" };
@@ -696,7 +715,7 @@ export async function generatedNflMappings() {
       mergeGamePrograms(scheduledPrograms)
         .map((program) => enrichGameProgram(program)),
     );
-    const games = fallback ? enrichedGames : enrichedGames.filter((program) => program.espnEventId);
+    const games = enrichedGames;
     const programs = slot ? expandedDailyPrograms(games, { slot, channelName: row.name, nowDate }) : [];
     return {
       channel: {
@@ -709,6 +728,7 @@ export async function generatedNflMappings() {
         sourceTitle: row.source_title || "",
         slot,
       },
+      sourceProgramCount: sourcePrograms.length,
       programs,
       program: programs[0] || null,
       parsed: programs.length > 0,

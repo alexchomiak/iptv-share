@@ -18,9 +18,9 @@ class FixedDate extends Date {
 function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true } = {}) {
   let searches = 0;
   const label = "NFL | 08 - 1pm Bears at Panthers";
-  const xml = `<tv><channel id="slot08"><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>${label}</title></programme>`).join("")}</tv>`;
+  const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>Coming Up: Chicago Bears @ Carolina Panthers</title></programme>`).join("")}</tv>`;
   const context = vm.createContext({
-    Date: FixedDate, Intl, Buffer, XMLParser, gunzipSync,
+    Date: FixedDate, Intl, Buffer, AbortSignal, XMLParser, gunzipSync,
     config: { nflMapperTimezone: "America/New_York", nflMapperDurationSeconds: 21600, nflMapperSourceUrl: "https://fixture.test/guide.xml", nflMapperSourceCacheSeconds: 86400 },
     db: { prepare: () => ({ all: () => [{ id: 1, tvg_id: "slot08", name: localTitle, source_title: localTitle }] }) },
     fetch: async () => ({ ok: true, arrayBuffer: async () => Buffer.from(xml) }),
@@ -45,10 +45,12 @@ test("bare local slot uses verified source matchup with ESPN kickoff, deduplicat
   assert.equal(mapping.programs.find(p => p.source === "generated-pregame").startAt, kickoff - 3600);
 });
 
-test("unverified source assignment does not fabricate a game", async () => {
+test("source assignment still publishes when optional ESPN enrichment is unavailable", async () => {
   const { context } = fixture({ available: false });
   const [mapping] = await context.generatedNflMappings();
-  assert.equal(mapping.programs.some(p => p.title.includes("Bears")), false);
+  const game = mapping.programs.find(p => p.title === "Chicago Bears at Carolina Panthers");
+  assert.ok(game);
+  assert.equal(game.espnEventId, undefined);
 });
 
 test("stale source matchup stays on the ESPN date instead of moving to this Sunday", async () => {

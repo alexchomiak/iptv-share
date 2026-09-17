@@ -1020,13 +1020,26 @@ export async function searchEspnGames({ league = "nfl", q = "", start, end, ttlS
   const selected = LEAGUES[league] || LEAGUES.nfl;
   const startDate = start ? new Date(Number(start) * 1000) : new Date();
   const endDate = end ? new Date(Number(end) * 1000) : new Date(startDate.getTime() + 21 * 24 * 60 * 60 * 1000);
-  const url = new URL(`https://site.api.espn.com/apis/site/v2/sports/${selected.sport}/${selected.league}/scoreboard`);
-  url.searchParams.set("dates", `${ymd(startDate)}-${ymd(endDate)}`);
-  url.searchParams.set("limit", "200");
-  const { payload, cache, fetchedAt } = await fetchJsonCached(url.toString(), ttlSeconds);
+  const firstDay = Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate());
+  const lastDay = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+  const dayUrls = [];
+  for (let day = firstDay; day <= lastDay && dayUrls.length < 31; day += 24 * 60 * 60 * 1000) {
+    const url = new URL(`https://site.api.espn.com/apis/site/v2/sports/${selected.sport}/${selected.league}/scoreboard`);
+    url.searchParams.set("dates", ymd(day));
+    url.searchParams.set("limit", "200");
+    dayUrls.push(url.toString());
+  }
+  const results = await Promise.allSettled(dayUrls.map((url) => fetchJsonCached(url, ttlSeconds)));
+  const successful = results.filter((result) => result.status === "fulfilled").map((result) => result.value);
+  if (!successful.length) throw results.find((result) => result.status === "rejected")?.reason || new Error("ESPN search failed");
+  const payload = { events: successful.flatMap((result) => result.payload?.events || []) };
+  const cache = successful.every((result) => result.cache === "hit") ? "hit" : successful.some((result) => result.cache === "stale") ? "stale" : "miss";
+  const fetchedAt = Math.max(...successful.map((result) => Number(result.fetchedAt || 0)));
   const needle = String(q || "").trim().toLowerCase();
+  const seen = new Set();
   const games = (payload.events || [])
     .map((event) => normalizeEvent(event, league))
+    .filter((event) => event.id && !seen.has(event.id) && seen.add(event.id))
     .filter((event) => {
       if (!needle) return true;
       return `${event.name} ${event.shortName} ${event.home.name} ${event.home.abbreviation} ${event.away.name} ${event.away.abbreviation}`

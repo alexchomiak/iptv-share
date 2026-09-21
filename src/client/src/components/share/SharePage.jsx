@@ -1,5 +1,6 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
+import { browserPlaybackUrl } from "../../lib/playbackUrls.js";
 import StaticCountdown from "./Countdown.jsx";
 import ShareChat from "./ShareChat.jsx";
 import LoadingSpinner from "../LoadingSpinner.jsx";
@@ -28,6 +29,8 @@ function SharePage({ slug }) {
     if (status?.status === "ready") setPlayerAttempt((current) => current + 1);
   }, []);
   const hasActiveStreamViewer = streamActive || viewers.some((viewer) => viewer.streaming);
+  const browserStreamUrl = useMemo(() => browserPlaybackUrl(share?.stream_url, window.location.origin), [share?.stream_url]);
+  const browserHlsUrl = useMemo(() => browserPlaybackUrl(share?.hls_url, window.location.origin), [share?.hls_url]);
 
   function sportsPollDelaySeconds(payload) {
     if (Number(payload.pollAfterSeconds) > 0) return Number(payload.pollAfterSeconds);
@@ -257,8 +260,8 @@ function SharePage({ slug }) {
               <Suspense fallback={<div className="playerLoading">Loading player...</div>}>
                 <Player
                   key={`${viewerToken}-${playerAttempt}`}
-                  src={share.stream_url}
-                  hlsSrc={share.hls_url}
+                  src={browserStreamUrl}
+                  hlsSrc={browserHlsUrl}
                   kind={share.stream_kind}
                   viewerToken={viewerToken}
                   onPlaybackActive={setStreamActive}

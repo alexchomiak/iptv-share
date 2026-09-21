@@ -105,16 +105,8 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const armPlayback = () => setArmed(true);
 
   useEffect(() => {
-    setArmed(false);
-  }, [src, hlsSrc, kind, viewerToken]);
-
-  useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
-    video.muted = false;
-    video.defaultMuted = false;
-    video.volume = 1;
-    video.removeAttribute("muted");
     setMessage("");
     video.removeAttribute("src");
     video.load();

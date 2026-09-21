@@ -13,6 +13,7 @@ import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
 import { addPlatformMediaSource } from "./platformSources.js";
 import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
+import { shouldEndOpenSportsStream } from "./sportsStreamCutoff.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
   espnFastcastDebug,
@@ -1167,7 +1168,10 @@ async function withShareCutoff(cutoff, res, action) {
       checking = true;
       try {
         const entitlement = await resolveScheduledStreamEntitlement(cutoff);
-        if (!entitlement.streamable && !res.destroyed) res.destroy();
+        if (shouldEndOpenSportsStream(entitlement) && !res.destroyed) {
+          console.info(`Closing completed sports stream for event ${cutoff.id || cutoff.espn_event_id || "unknown"}`);
+          res.destroy();
+        }
       } finally {
         checking = false;
       }

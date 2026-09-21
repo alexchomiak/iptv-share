@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import mpegts from "mpegts.js";
 
@@ -14,7 +14,7 @@ function describeVideoError(video, label) {
   return `${label} playback failed: ${names[error.code] || "MEDIA_ERR_UNKNOWN"} (${error.code})${error.message ? ` / ${error.message}` : ""}`;
 }
 
-function attachHlsJs(video, source, setMessage) {
+function attachHlsJs(video, source, recover) {
   const hls = new Hls({
     lowLatencyMode: false,
     maxBufferLength: 60,
@@ -22,7 +22,7 @@ function attachHlsJs(video, source, setMessage) {
     liveSyncDurationCount: 6,
   });
   hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (data.fatal) setMessage(`HLS playback failed: ${data.details || data.type}`);
+    if (data.fatal) recover(`HLS playback stalled: ${data.details || data.type}`);
   });
   hls.loadSource(source);
   hls.attachMedia(video);
@@ -35,7 +35,7 @@ function attachNativeVideo(video, source) {
   return () => {};
 }
 
-function attachMpegTs(video, source, setMessage) {
+function attachMpegTs(video, source, recover) {
   const player = mpegts.createPlayer(
     {
       type: "mse",
@@ -64,7 +64,7 @@ function attachMpegTs(video, source, setMessage) {
       video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA;
     if (!isRecoverableMseNoise) {
       const cleanInfo = typeof info === "string" ? info : info?.msg || info?.message || "";
-      setMessage(`MPEG-TS playback failed: ${[type, detail, cleanInfo].filter(Boolean).join(" / ") || "stream error"}`);
+      recover(`MPEG-TS playback stalled: ${[type, detail, cleanInfo].filter(Boolean).join(" / ") || "stream error"}`);
     }
   });
   player.attachMediaElement(video);
@@ -100,9 +100,23 @@ function withViewerToken(source, viewerToken) {
 
 function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const videoRef = React.useRef(null);
+  const recoveryTimerRef = useRef(null);
   const [message, setMessage] = useState("");
   const [armed, setArmed] = useState(false);
+  const [recoveryAttempt, setRecoveryAttempt] = useState(0);
   const armPlayback = () => setArmed(true);
+  const recoverPlayback = useCallback((reason) => {
+    if (recoveryTimerRef.current) return;
+    setMessage(`${reason} Reconnecting…`);
+    recoveryTimerRef.current = window.setTimeout(() => {
+      recoveryTimerRef.current = null;
+      setRecoveryAttempt((current) => current + 1);
+    }, 1500);
+  }, []);
+
+  useEffect(() => () => {
+    if (recoveryTimerRef.current) window.clearTimeout(recoveryTimerRef.current);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -124,7 +138,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     const clearRecoveredError = () => {
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.paused) setMessage("");
     };
-    const reportNativeError = () => setMessage(describeVideoError(video, kind === "mpegts" && hlsSrc ? "HLS remux" : "Native video"));
+    const reportNativeError = () => recoverPlayback(describeVideoError(video, kind === "mpegts" && hlsSrc ? "HLS remux" : "Native video"));
     const reportActive = () => onPlaybackActive?.(true);
     const reportInactive = () => onPlaybackActive?.(false);
     video.addEventListener("playing", clearRecoveredError);
@@ -135,21 +149,36 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     video.addEventListener("error", reportNativeError);
 
     let cleanup = () => {};
+    let lastPlaybackTime = video.currentTime;
+    let lastProgressAt = Date.now();
+    const stallWatch = window.setInterval(() => {
+      if (document.hidden || video.paused || video.ended) {
+        lastPlaybackTime = video.currentTime;
+        lastProgressAt = Date.now();
+        return;
+      }
+      if (video.currentTime > lastPlaybackTime + 0.1) {
+        lastPlaybackTime = video.currentTime;
+        lastProgressAt = Date.now();
+        return;
+      }
+      if (Date.now() - lastProgressAt >= 20000) recoverPlayback("Playback stopped receiving video.");
+    }, 2000);
     const streamSrc = withViewerToken(src, viewerToken);
     const streamHlsSrc = withViewerToken(hlsSrc, viewerToken);
 
     if (kind === "hls" && nativeHlsSupported) {
       cleanup = attachNativeVideo(video, streamSrc);
     } else if (kind === "hls" && Hls.isSupported()) {
-      cleanup = attachHlsJs(video, streamSrc, setMessage);
+      cleanup = attachHlsJs(video, streamSrc, recoverPlayback);
     } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported && appleTouchDevice) {
       cleanup = attachNativeVideo(video, streamHlsSrc);
     } else if (kind === "mpegts" && mpegts.getFeatureList().mseLivePlayback) {
-      cleanup = attachMpegTs(video, streamSrc, setMessage);
+      cleanup = attachMpegTs(video, streamSrc, recoverPlayback);
     } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported) {
       cleanup = attachNativeVideo(video, streamHlsSrc);
     } else if (kind === "mpegts" && streamHlsSrc && Hls.isSupported()) {
-      cleanup = attachHlsJs(video, streamHlsSrc, setMessage);
+      cleanup = attachHlsJs(video, streamHlsSrc, recoverPlayback);
     } else {
       if (kind === "mpegts") setMessage("This browser does not support MPEG-TS playback through Media Source Extensions, and no HLS remux URL is available.");
       cleanup = attachNativeVideo(video, streamSrc);
@@ -163,13 +192,14 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       video.removeEventListener("ended", reportInactive);
       video.removeEventListener("canplay", clearRecoveredError);
       video.removeEventListener("error", reportNativeError);
+      window.clearInterval(stallWatch);
       onPlaybackActive?.(false);
       cleanup();
       video.pause();
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive, armed]);
+  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive, armed, recoverPlayback, recoveryAttempt]);
 
   return (
     <section className="playerArea">

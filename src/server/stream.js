@@ -10,6 +10,8 @@ import { config } from "./config.js";
 import { safeCompare, signedShareCookie, signStreamTarget } from "./crypto.js";
 
 const hlsSessions = new Map();
+const hlsSessionsById = new Map();
+const hlsSessionStarts = new Map();
 
 export function shareIsUnlocked(req, share) {
   if (!share.password_hash) return true;
@@ -150,8 +152,8 @@ export function proxyFmp4Stream(req, res, targetUrl) {
   });
 }
 
-function sessionId(slug, targetUrl) {
-  return crypto.createHash("sha256").update(`${slug}:${targetUrl}`).digest("base64url").slice(0, 48);
+function sessionId(slug, targetUrl, compatibilityMode = false) {
+  return crypto.createHash("sha256").update(`${slug}:${targetUrl}:${compatibilityMode ? "compat" : "copy"}`).digest("base64url").slice(0, 48);
 }
 
 export function createHlsSessionDirectory(id, temporaryRoot = os.tmpdir()) {
@@ -168,8 +170,8 @@ function waitForHlsPlaylist(session, timeoutMs = 10000) {
         resolve();
         return;
       }
-      if (session.process.exitCode !== null || session.process.signalCode) {
-        reject(new Error(session.stderr?.trim() || "FFmpeg exited before creating the HLS playlist"));
+      if (session.stopped) {
+        reject(new Error("HLS session stopped before creating the playlist"));
         return;
       }
       if (Date.now() - started > timeoutMs) {
@@ -274,10 +276,16 @@ function probeCodecs(targetUrl) {
   });
 }
 
-async function hlsCodecArgs(targetUrl) {
-  const codecs = await probeCodecs(targetUrl);
-  const videoCopy = ["h264", "hevc"].includes(codecs.video);
-  const audioCopy = ["aac", "mp3"].includes(codecs.audio);
+async function hlsCodecArgs(targetUrl, compatibilityMode = false) {
+  // Compatibility mode always encodes both tracks, so probing would open an
+  // unnecessary second connection to the live upstream.
+  const codecs = compatibilityMode ? { video: "", audio: "" } : await probeCodecs(targetUrl);
+  return hlsCodecPlan(codecs, compatibilityMode);
+}
+
+export function hlsCodecPlan(codecs, compatibilityMode = false) {
+  const videoCopy = !compatibilityMode && ["h264", "hevc"].includes(codecs.video);
+  const audioCopy = !compatibilityMode && ["aac", "mp3"].includes(codecs.audio);
   const videoTranscodeMode = config.ffmpegHwaccel === "vaapi" ? "vaapi" : "cpu";
   const videoTranscodeArgs =
     videoTranscodeMode === "vaapi"
@@ -289,6 +297,7 @@ async function hlsCodecArgs(targetUrl) {
     inputArgs: videoCopy || videoTranscodeMode !== "vaapi" ? [] : ["-vaapi_device", config.ffmpegVaapiDevice],
     outputArgs: [
       ...(videoCopy ? ["-c:v", "copy"] : videoTranscodeArgs),
+      ...(compatibilityMode ? ["-force_key_frames", "expr:gte(t,n_forced*4)"] : []),
       "-c:a",
       audioCopy ? "copy" : "aac",
       ...(audioCopy ? [] : ["-b:a", "160k", "-ac", "2"]),
@@ -298,39 +307,114 @@ async function hlsCodecArgs(targetUrl) {
   };
 }
 
-function stopHlsSession(session) {
+function hlsSessionDetails(session) {
+  const ageSeconds = Math.round((Date.now() - session.startedAt) / 1000);
+  const idleSeconds = Math.round((Date.now() - session.lastAccessed) / 1000);
+  return `share=${JSON.stringify(session.slug)} session=${session.id.slice(-12)} age=${ageSeconds}s idle=${idleSeconds}s playlists=${session.playlistRequests} segments=${session.segmentRequests}`;
+}
+
+function stopHlsSession(session, reason = "cleanup") {
+  if (!session || session.stopped) return;
+  session.stopped = true;
+  console.info(`HLS session stopped (${reason}): ${hlsSessionDetails(session)}`);
   if (session?.process && !session.process.killed) session.process.kill("SIGTERM");
   if (session?.cleanupTimer) clearTimeout(session.cleanupTimer);
-  hlsSessions.delete(session.id);
+  if (session?.restartTimer) clearTimeout(session.restartTimer);
+  if (hlsSessions.get(session.key) === session) hlsSessions.delete(session.key);
+  if (hlsSessionsById.get(session.id) === session) hlsSessionsById.delete(session.id);
   if (session?.dir) {
     setTimeout(() => fs.rm(session.dir, { recursive: true, force: true }, () => {}), 500);
   }
 }
 
-function scheduleHlsCleanup(session, cutoffWindow) {
-  if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
-  const cutoffMs = cutoffWindow?.open_ended_cutoff
-    ? Number.POSITIVE_INFINITY
-    : Math.max(15000, ((cutoffWindow?.ends_at || 0) + config.shareAutoDeleteSeconds - Math.floor(Date.now() / 1000)) * 1000);
-  const idleMs = 45000;
-  session.cleanupTimer = setTimeout(() => {
-    if (Date.now() - session.lastAccessed > idleMs || Date.now() >= session.startedAt + cutoffMs) stopHlsSession(session);
-    else scheduleHlsCleanup(session, cutoffWindow);
-  }, Math.min(idleMs, cutoffMs));
+export function stopAllHlsSessions() {
+  for (const session of hlsSessions.values()) stopHlsSession(session, "shutdown");
 }
 
-async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow) {
-  const id = sessionId(slug, targetUrl);
-  const existing = hlsSessions.get(id);
-  if (existing && existing.process.exitCode === null) {
+export function hlsCleanupCutoffAt(startedAt, cutoffWindow) {
+  return cutoffWindow?.open_ended_cutoff
+    ? Number.POSITIVE_INFINITY
+    : Math.max(startedAt + 15000, ((cutoffWindow?.ends_at || 0) + config.shareAutoDeleteSeconds) * 1000);
+}
+
+function scheduleHlsCleanup(session, cutoffWindow) {
+  if (session.cleanupTimer) clearTimeout(session.cleanupTimer);
+  const cutoffAt = hlsCleanupCutoffAt(session.startedAt, cutoffWindow);
+  const idleMs = 45000;
+  session.cleanupTimer = setTimeout(() => {
+    if (Date.now() - session.lastAccessed >= idleMs) stopHlsSession(session, "idle");
+    else if (Date.now() >= cutoffAt) stopHlsSession(session, "cutoff");
+    else scheduleHlsCleanup(session, cutoffWindow);
+  }, Math.max(1, Math.min(idleMs, cutoffAt - Date.now())));
+}
+
+async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow, compatibilityMode = false) {
+  const key = sessionId(slug, targetUrl, compatibilityMode);
+  const existing = hlsSessions.get(key);
+  if (existing && !existing.stopped) {
     existing.lastAccessed = Date.now();
     scheduleHlsCleanup(existing, cutoffWindow);
     return existing;
   }
 
+  if (hlsSessionStarts.has(key)) return hlsSessionStarts.get(key);
+  const start = createHlsSession(targetUrl, slug, key, cutoffWindow, compatibilityMode);
+  hlsSessionStarts.set(key, start);
+  try {
+    return await start;
+  } finally {
+    if (hlsSessionStarts.get(key) === start) hlsSessionStarts.delete(key);
+  }
+}
+
+async function createHlsSession(targetUrl, slug, key, cutoffWindow, compatibilityMode) {
+  const id = `${key}-${crypto.randomBytes(6).toString("hex")}`;
   const dir = createHlsSessionDirectory(id);
-  const { inputArgs, outputArgs, codecs, videoMode, audioMode } = await hlsCodecArgs(targetUrl);
+  const { inputArgs, outputArgs, codecs, videoMode, audioMode } = await hlsCodecArgs(targetUrl, compatibilityMode);
   const playlistPath = path.join(dir, "index.m3u8");
+  const session = {
+    key,
+    id,
+    slug,
+    dir,
+    playlistPath,
+    targetUrl,
+    inputArgs,
+    outputArgs,
+    process: null,
+    startedAt: Date.now(),
+    lastAccessed: Date.now(),
+    codecs,
+    videoMode,
+    audioMode,
+    compatibilityMode,
+    playlistRequests: 0,
+    segmentRequests: 0,
+    restarts: 0,
+    rapidFailures: 0,
+    discontinuityBoundaries: new Set(),
+    stderr: "",
+    stopped: false,
+  };
+  hlsSessions.set(key, session);
+  hlsSessionsById.set(id, session);
+  launchHlsProcess(session);
+  scheduleHlsCleanup(session, cutoffWindow);
+  return session;
+}
+
+function launchHlsProcess(session) {
+  const restarting = session.restarts > 0;
+  const { targetUrl, inputArgs, outputArgs, dir, playlistPath } = session;
+  if (restarting) {
+    try {
+      const previous = fs.readFileSync(playlistPath, "utf8");
+      const segmentNumbers = [...previous.matchAll(/^segment_(\d{5})\.ts$/gm)].map((match) => Number(match[1]));
+      if (segmentNumbers.length) session.discontinuityBoundaries.add(Math.max(...segmentNumbers) + 1);
+    } catch (error) {
+      if (error.code !== "ENOENT") console.warn(`Cannot read HLS playlist before restart: ${error.message}`);
+    }
+  }
   const ffmpeg = spawn(
     "ffmpeg",
     [
@@ -340,6 +424,9 @@ async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow) {
       "-rw_timeout",
       "15000000",
       ...inputArgs,
+      // Some live TS proxies send buffered media faster than real time. Without
+      // pacing, the HLS live edge races ahead of viewers and forces seeks.
+      "-re",
       "-i",
       targetUrl,
       "-map",
@@ -352,50 +439,60 @@ async function getOrCreateHlsSession(targetUrl, slug, cutoffWindow) {
       "-hls_time",
       "4",
       "-hls_list_size",
-      "6",
+      "12",
       "-hls_flags",
-      "delete_segments+append_list+omit_endlist+independent_segments",
+      `${restarting ? "append_list+discont_start+" : ""}omit_endlist+independent_segments`,
       "-hls_segment_filename",
       path.join(dir, "segment_%05d.ts"),
       playlistPath,
     ],
     { stdio: ["ignore", "ignore", "pipe"] },
   );
-  let stderr = "";
+  session.process = ffmpeg;
+  session.processStartedAt = Date.now();
+  session.stderr = "";
   ffmpeg.stderr.on("data", (chunk) => {
-    stderr = `${stderr}${chunk}`.slice(-2000);
+    session.stderr = `${session.stderr}${chunk}`.slice(-2000);
   });
-  const session = {
-    id,
-    dir,
-    playlistPath,
-    process: ffmpeg,
-    startedAt: Date.now(),
-    lastAccessed: Date.now(),
-    codecs,
-    videoMode,
-    audioMode,
-    get stderr() {
-      return stderr;
-    },
-  };
-  hlsSessions.set(id, session);
-  ffmpeg.on("close", () => {
-    setTimeout(() => {
-      if (hlsSessions.get(id) === session) stopHlsSession(session);
-    }, 30000);
+  console.info(`HLS FFmpeg started: ${hlsSessionDetails(session)} restart=${session.restarts} video=${session.videoMode} audio=${session.audioMode} compat=${session.compatibilityMode}`);
+  ffmpeg.on("error", (error) => {
+    session.stderr = error.message;
   });
-  scheduleHlsCleanup(session, cutoffWindow);
-  return session;
+  ffmpeg.on("close", (code, signal) => {
+    console.info(`HLS FFmpeg exited: ${hlsSessionDetails(session)} code=${code} signal=${signal || "none"}`);
+    if (code && session.stderr.trim()) console.warn(`HLS remux exited for ${session.slug}: ${session.stderr.trim().replaceAll(targetUrl, "[source]")}`);
+    if (session.stopped || hlsSessions.get(session.key) !== session) return;
+    const processAge = Date.now() - session.processStartedAt;
+    session.rapidFailures = processAge >= 10000 ? 0 : session.rapidFailures + 1;
+    const delayMs = Math.min(8000, 1000 * 2 ** Math.min(session.rapidFailures, 3));
+    session.restartTimer = setTimeout(() => {
+      session.restartTimer = null;
+      if (session.stopped) return;
+      session.restarts += 1;
+      launchHlsProcess(session);
+    }, delayMs);
+  });
+}
+
+export function numberHlsDiscontinuities(playlist, boundaries) {
+  const mediaSequence = Number(playlist.match(/^#EXT-X-MEDIA-SEQUENCE:(\d+)/m)?.[1]);
+  const discontinuitySequence = Number.isFinite(mediaSequence)
+    ? [...boundaries].filter((boundary) => boundary < mediaSequence).length
+    : 0;
+  return playlist.replace(
+    /^#EXT-X-MEDIA-SEQUENCE:(\d+)$/m,
+    `#EXT-X-MEDIA-SEQUENCE:$1\n#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`,
+  );
 }
 
 function rewriteLocalHlsPlaylist(playlist, req, session) {
+  const numberedPlaylist = numberHlsDiscontinuities(playlist, session.discontinuityBoundaries);
   const baseParams = new URLSearchParams(req.query);
   baseParams.set("hls", "1");
   baseParams.set("session", session.id);
   baseParams.delete("segment");
   baseParams.delete("format");
-  return `${playlist
+  return `${numberedPlaylist
     .split(/\r?\n/)
     .map((line) => {
       const trimmed = line.trim();
@@ -407,11 +504,30 @@ function rewriteLocalHlsPlaylist(playlist, req, session) {
     .join("\n")}\n`;
 }
 
+function pruneHlsSegments(session, playlist) {
+  if (Date.now() - (session.lastPrunedAt || 0) < 30000) return;
+  session.lastPrunedAt = Date.now();
+  const sequence = Number(playlist.match(/^#EXT-X-MEDIA-SEQUENCE:(\d+)/m)?.[1]);
+  if (!Number.isFinite(sequence) || sequence <= 48) return;
+  const oldestToKeep = sequence - 48;
+  fs.readdir(session.dir, (error, files) => {
+    if (error || session.stopped) return;
+    for (const file of files) {
+      const number = Number(file.match(/^segment_(\d{5})\.ts$/)?.[1]);
+      if (Number.isFinite(number) && number < oldestToKeep) {
+        fs.rm(path.join(session.dir, file), () => {});
+      }
+    }
+  });
+}
+
 export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWindow) {
-  const session = await getOrCreateHlsSession(targetUrl, slug, cutoffWindow);
-  await waitForHlsPlaylist(session);
+  const session = await getOrCreateHlsSession(targetUrl, slug, cutoffWindow, req.query.compat === "1");
+  session.playlistRequests += 1;
   session.lastAccessed = Date.now();
-  const playlist = await waitForPlaylistSegments(session);
+  await waitForHlsPlaylist(session, session.compatibilityMode ? 35000 : 20000);
+  const playlist = await waitForPlaylistSegments(session, session.compatibilityMode ? 30000 : 14000);
+  pruneHlsSegments(session, playlist);
   res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Accel-Buffering", "no");
@@ -423,18 +539,21 @@ export async function serveHlsRemuxPlaylist(req, res, targetUrl, slug, cutoffWin
 }
 
 export async function serveHlsRemuxSegment(req, res) {
-  const session = hlsSessions.get(String(req.query.session || ""));
+  const session = hlsSessionsById.get(String(req.query.session || ""));
   const segment = path.basename(String(req.query.segment || ""));
   if (!session || !segment || segment.includes("..")) {
+    console.warn(`HLS segment unavailable: session=${String(req.query.session || "").slice(-12)} segment=${segment || "missing"}`);
     res.status(404).end();
     return;
   }
   const file = path.join(session.dir, segment);
   if (!(await waitForSegment(file))) {
+    console.warn(`HLS segment missing: ${hlsSessionDetails(session)} segment=${segment}`);
     res.status(404).end();
     return;
   }
   session.lastAccessed = Date.now();
+  session.segmentRequests += 1;
   res.setHeader("Content-Type", "video/mp2t");
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Accept-Ranges", "bytes");

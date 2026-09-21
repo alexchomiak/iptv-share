@@ -1,6 +1,7 @@
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { eventEnd, eventStart, formatDateTime } from "../../lib/time.js";
 import { browserPlaybackUrl } from "../../lib/playbackUrls.js";
+import { newestSportsSummary } from "../../lib/liveState.js";
 import StaticCountdown from "./Countdown.jsx";
 import ShareChat from "./ShareChat.jsx";
 import LoadingSpinner from "../LoadingSpinner.jsx";
@@ -48,14 +49,14 @@ function SharePage({ slug }) {
 
   const handleSportsUpdate = useCallback((payload) => {
     if (!payload?.summary || !payload.eventId || payload.eventId !== activeEventIdRef.current) return;
-    setSportsSummary({
+    setSportsSummary((current) => newestSportsSummary(current, {
       ...payload.summary,
       refreshSeconds: payload.refreshSeconds,
       realtime: true,
       realtimeStatus: payload.source || "fastcast",
       fetchedAt: payload.fetchedAt,
       spoilerDelaySeconds: payload.spoilerDelaySeconds,
-    });
+    }));
     setSportsMessage("");
     if (sportsSummaryIsFinal(payload.summary)) loadShare();
   }, []);
@@ -157,14 +158,14 @@ function SharePage({ slug }) {
             setSportsMessage("");
           }
         } else {
-          setSportsSummary({
+          setSportsSummary((current) => newestSportsSummary(current, {
             ...payload.summary,
             refreshSeconds: payload.refreshSeconds,
             realtime: payload.realtime,
             realtimeStatus: payload.realtimeStatus,
             fetchedAt: payload.fetchedAt,
             spoilerDelaySeconds: payload.spoilerDelaySeconds,
-          });
+          }));
           setSportsMessage("");
           if (sportsSummaryIsFinal(payload.summary)) loadShare();
         }

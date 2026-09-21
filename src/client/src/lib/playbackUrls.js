@@ -9,3 +9,10 @@ export function browserPlaybackUrl(value, origin = "http://localhost") {
     return value;
   }
 }
+
+export function nativeHlsPlaybackUrl(value, origin = "http://localhost") {
+  if (!value) return value;
+  const url = new URL(value, origin);
+  url.searchParams.set("compat", "1");
+  return `${url.pathname}${url.search}${url.hash}`;
+}

@@ -1,6 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldEndOpenSportsStream } from "../src/server/sportsStreamCutoff.js";
+import { shouldEndOpenSportsStream, streamCutoffWindow } from "../src/server/sportsStreamCutoff.js";
+
+test("linked sports events keep the sports cutoff after an ambiguous initial lookup", () => {
+  const event = { id: 17, espn_event_id: "401000001", ends_at: 1000 };
+  const cutoff = streamCutoffWindow({ event, streamable: true, usesSportsClock: false, source: "epg-sports-error" });
+  assert.equal(cutoff.open_ended_cutoff, true);
+  assert.equal(cutoff.id, 17);
+});
+
+test("ordinary EPG events retain their scheduled cutoff", () => {
+  const event = { id: 18, ends_at: 1000 };
+  assert.deepEqual(streamCutoffWindow({ event, streamable: true, usesSportsClock: false, source: "epg" }), event);
+});
 
 test("keeps an established sports stream open through ambiguous and failed refreshes", () => {
   assert.equal(shouldEndOpenSportsStream({ streamable: false, usesSportsClock: false, source: "epg-sports-state" }), false);

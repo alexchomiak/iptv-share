@@ -13,7 +13,7 @@ import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
 import { addPlatformMediaSource } from "./platformSources.js";
 import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
-import { shouldEndOpenSportsStream } from "./sportsStreamCutoff.js";
+import { shouldEndOpenSportsStream, streamCutoffWindow } from "./sportsStreamCutoff.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
   espnFastcastDebug,
@@ -1151,11 +1151,6 @@ function unkickViewer(kind, shareId, viewerId) {
   promoteWaitlist(kind, shareId);
   broadcastShareState(kind, shareId);
   return result;
-}
-
-function streamCutoffWindow(entitlement) {
-  if (!entitlement?.usesSportsClock) return entitlement?.event || entitlement;
-  return { ...entitlement.event, open_ended_cutoff: true };
 }
 
 async function withShareCutoff(cutoff, res, action) {

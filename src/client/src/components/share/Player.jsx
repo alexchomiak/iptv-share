@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Hls from "hls.js";
 import mpegts from "mpegts.js";
+import { nativeHlsPlaybackUrl } from "../../lib/playbackUrls.js";
 
 function describeVideoError(video, label) {
   const error = video.error;
@@ -19,7 +20,7 @@ function attachHlsJs(video, source, setMessage) {
     lowLatencyMode: false,
     maxBufferLength: 60,
     maxMaxBufferLength: 120,
-    liveSyncDurationCount: 6,
+    liveSyncDurationCount: 3,
   });
   hls.on(Hls.Events.ERROR, (_event, data) => {
     if (data.fatal) setMessage(`HLS playback failed: ${data.details || data.type}`);
@@ -119,12 +120,13 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       };
     }
     const nativeHlsSupported = Boolean(video.canPlayType("application/vnd.apple.mpegurl"));
-    const appleTouchDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const safari = /Safari\//.test(navigator.userAgent) && !/(Chrome|Chromium|CriOS|Edg)\//.test(navigator.userAgent);
 
     const clearRecoveredError = () => {
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.paused) setMessage("");
     };
-    const reportNativeError = () => setMessage(describeVideoError(video, kind === "mpegts" && hlsSrc ? "HLS remux" : "Native video"));
+    let playbackLabel = "Native video";
+    const reportNativeError = () => setMessage(describeVideoError(video, playbackLabel));
     const reportActive = () => onPlaybackActive?.(true);
     const reportInactive = () => onPlaybackActive?.(false);
     video.addEventListener("playing", clearRecoveredError);
@@ -139,16 +141,22 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     const streamHlsSrc = withViewerToken(hlsSrc, viewerToken);
 
     if (kind === "hls" && nativeHlsSupported) {
+      playbackLabel = "HLS";
       cleanup = attachNativeVideo(video, streamSrc);
     } else if (kind === "hls" && Hls.isSupported()) {
+      playbackLabel = "HLS";
       cleanup = attachHlsJs(video, streamSrc, setMessage);
-    } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported && appleTouchDevice) {
-      cleanup = attachNativeVideo(video, streamHlsSrc);
+    } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported && safari) {
+      playbackLabel = "HLS remux";
+      cleanup = attachNativeVideo(video, nativeHlsPlaybackUrl(streamHlsSrc, window.location.origin));
     } else if (kind === "mpegts" && mpegts.getFeatureList().mseLivePlayback) {
+      playbackLabel = "MPEG-TS";
       cleanup = attachMpegTs(video, streamSrc, setMessage);
     } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported) {
-      cleanup = attachNativeVideo(video, streamHlsSrc);
+      playbackLabel = "HLS remux";
+      cleanup = attachNativeVideo(video, nativeHlsPlaybackUrl(streamHlsSrc, window.location.origin));
     } else if (kind === "mpegts" && streamHlsSrc && Hls.isSupported()) {
+      playbackLabel = "HLS remux";
       cleanup = attachHlsJs(video, streamHlsSrc, setMessage);
     } else {
       if (kind === "mpegts") setMessage("This browser does not support MPEG-TS playback through Media Source Extensions, and no HLS remux URL is available.");

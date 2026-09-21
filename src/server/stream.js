@@ -447,154 +447,66 @@ function requestModule(url) {
 
 function proxyStreamNative(req, res, targetUrl, slug, redirectCount, extraParams = {}) {
   return new Promise((resolve, reject) => {
-    let activeRequest = null;
-    let reconnectTimer = null;
-    let downstreamStarted = false;
-    let finished = false;
-    let retryDelayMs = 250;
-    const initialRetryDeadline = Date.now() + 10000;
-
-    const finish = (error = null) => {
-      if (finished) return;
-      finished = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (activeRequest && !activeRequest.destroyed) activeRequest.destroy();
-      req.off("aborted", stop);
-      res.off("close", stop);
-      if (error) reject(error);
-      else resolve();
+    const parsedUrl = new URL(targetUrl);
+    const headers = {
+      "User-Agent": "iptv-share/0.2",
+      Accept: "*/*",
+      Connection: "close",
     };
-    const stop = () => finish();
-    req.once("aborted", stop);
-    res.once("close", stop);
+    if (req.headers.range) headers.Range = req.headers.range;
 
-    const reconnect = (url) => {
-      if (finished || req.destroyed || res.destroyed) {
-        finish();
+    const upstreamReq = requestModule(parsedUrl).request(parsedUrl, { headers }, (upstream) => {
+      const location = upstream.headers.location;
+      if ([301, 302, 303, 307, 308].includes(upstream.statusCode) && location && redirectCount < 5) {
+        upstream.resume();
+        resolve(proxyStreamNative(req, res, new URL(location, targetUrl).toString(), slug, redirectCount + 1, extraParams));
         return;
       }
-      const delay = retryDelayMs;
-      retryDelayMs = Math.min(5000, retryDelayMs * 2);
-      reconnectTimer = setTimeout(() => {
-        reconnectTimer = null;
-        connect(url, 0);
-      }, delay);
-      reconnectTimer.unref?.();
-    };
 
-    const connect = (url, redirects) => {
-      if (finished) return;
-      let attemptFinished = false;
-      const retryAttempt = (error = null) => {
-        if (attemptFinished || finished) return;
-        attemptFinished = true;
-        if (downstreamStarted || Date.now() < initialRetryDeadline) reconnect(targetUrl);
-        else finish(error || new Error("Upstream stream ended before playback started"));
-      };
-      const parsedUrl = new URL(url);
-      const headers = {
-        "User-Agent": "iptv-share/0.2",
-        Accept: "*/*",
-        Connection: "close",
-      };
-      if (!downstreamStarted && req.headers.range) headers.Range = req.headers.range;
+      if (upstream.statusCode < 200 || upstream.statusCode > 299) {
+        upstream.resume();
+        res.status(upstream.statusCode || 502).send("Upstream stream failed");
+        resolve();
+        return;
+      }
 
-      const request = requestModule(parsedUrl).request(parsedUrl, { headers }, (upstream) => {
-        const location = upstream.headers.location;
-        if ([301, 302, 303, 307, 308].includes(upstream.statusCode) && location && redirects < 5) {
-          attemptFinished = true;
-          upstream.resume();
-          connect(new URL(location, url).toString(), redirects + 1);
-          return;
-        }
-
-        if (upstream.statusCode < 200 || upstream.statusCode > 299) {
-          upstream.resume();
-          const retryableStatus = [408, 425, 429].includes(upstream.statusCode) || upstream.statusCode >= 500;
-          if (downstreamStarted || retryableStatus) retryAttempt(new Error(`Upstream stream returned HTTP ${upstream.statusCode}`));
-          else {
-            attemptFinished = true;
-            res.status(upstream.statusCode || 502).send("Upstream stream failed");
-            finish();
-          }
-          return;
-        }
-
-        const contentType = upstream.headers["content-type"] || "application/octet-stream";
-        if (looksLikeHls(url, contentType)) {
-          const chunks = [];
-          upstream.on("data", (chunk) => chunks.push(chunk));
-          upstream.on("end", () => {
-            attemptFinished = true;
-            const playlist = Buffer.concat(chunks).toString("utf8");
-            res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-            res.setHeader("Cache-Control", "no-store");
-            res.send(rewriteHlsPlaylist(playlist, url, slug, { viewer: req.query.viewer, ...extraParams }));
-            finish();
-          });
-          upstream.on("error", (error) => {
-            attemptFinished = true;
-            finish(error);
-          });
-          return;
-        }
-
-        const continuousMpegTs = inferStreamKind(url, contentType) === "mpegts";
-        if (!downstreamStarted) {
-          downstreamStarted = true;
-          if (res.socket) {
-            res.socket.setNoDelay(true);
-            res.socket.setKeepAlive(true, 30000);
-          }
-          res.status(upstream.statusCode || 200);
-          res.setHeader("Content-Type", contentType);
+      const contentType = upstream.headers["content-type"] || "application/octet-stream";
+      if (looksLikeHls(targetUrl, contentType)) {
+        const chunks = [];
+        upstream.on("data", (chunk) => chunks.push(chunk));
+        upstream.on("end", () => {
+          const playlist = Buffer.concat(chunks).toString("utf8");
+          res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
           res.setHeader("Cache-Control", "no-store");
-          res.setHeader("X-Accel-Buffering", "no");
-          if (!continuousMpegTs) {
-            for (const header of ["accept-ranges", "content-range", "content-length"]) {
-              const value = upstream.headers[header];
-              if (value) res.setHeader(header, value);
-            }
-          }
-        }
+          res.send(rewriteHlsPlaylist(playlist, targetUrl, slug, { viewer: req.query.viewer, ...extraParams }));
+          resolve();
+        });
+        upstream.on("error", reject);
+        return;
+      }
 
-        if (!continuousMpegTs) {
-          pipeline(upstream, res).then(() => {
-            attemptFinished = true;
-            finish();
-          }).catch((error) => {
-            attemptFinished = true;
-            if (req.destroyed || res.destroyed) finish();
-            else finish(error);
-          });
-          return;
-        }
+      if (res.socket) {
+        res.socket.setNoDelay(true);
+        res.socket.setKeepAlive(true, 30000);
+      }
+      res.status(upstream.statusCode || 200);
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Accel-Buffering", "no");
+      for (const header of ["accept-ranges", "content-range", "content-length"]) {
+        const value = upstream.headers[header];
+        if (value) res.setHeader(header, value);
+      }
 
-        // MPEG-TS live sources may end individual upstream HTTP responses at
-        // the live edge. Keep the signed public response open and splice the
-        // next upstream response into it. MPEG-TS is explicitly designed to
-        // tolerate transport discontinuities, while bounded backoff prevents
-        // an unavailable source from becoming a retry loop.
-        upstream.once("data", () => { retryDelayMs = 250; });
-        let settled = false;
-        const continueStream = () => {
-          if (settled) return;
-          settled = true;
-          upstream.unpipe(res);
-          retryAttempt();
-        };
-        upstream.once("end", continueStream);
-        upstream.once("aborted", continueStream);
-        upstream.once("error", continueStream);
-        upstream.pipe(res, { end: false });
+      pipeline(upstream, res).then(resolve).catch((error) => {
+        if (req.destroyed || res.destroyed) resolve();
+        else reject(error);
       });
+    });
 
-      activeRequest = request;
-      request.setTimeout(15000, () => request.destroy(new Error("Upstream stream timed out")));
-      request.once("error", retryAttempt);
-      request.end();
-    };
-
-    connect(targetUrl, redirectCount);
+    upstreamReq.setTimeout(15000, () => upstreamReq.destroy(new Error("Upstream stream timed out")));
+    upstreamReq.on("error", reject);
+    req.on("close", () => upstreamReq.destroy());
+    upstreamReq.end();
   });
 }

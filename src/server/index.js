@@ -13,6 +13,8 @@ import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
 import { addPlatformMediaSource } from "./platformSources.js";
 import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
+import { findActiveShareProgram as selectActiveShareProgram } from "./sharePrograms.js";
+import { staticHlsSegmentIsStreamable } from "./staticHlsAccess.js";
 import { shouldEndOpenSportsStream, streamCutoffWindow } from "./sportsStreamCutoff.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
@@ -26,6 +28,7 @@ import {
   watchEspnFastcastGame,
 } from "./espn.js";
 import {
+  activeHlsSessionForShare,
   decodeTarget,
   inferStreamKind,
   proxyFmp4Stream,
@@ -1341,25 +1344,7 @@ async function findActiveStaticEvent(shareId, options = {}) {
 }
 
 function findActiveShareProgram(shareId) {
-  return db
-    .prepare(
-      `
-      SELECT
-        epg_programs.*,
-        epg_programs.start_at AS starts_at,
-        epg_programs.end_at AS ends_at,
-        channels.stream_url
-      FROM share_link_items
-      JOIN epg_programs ON epg_programs.id = share_link_items.program_id
-      JOIN channels ON channels.id = epg_programs.channel_id
-      WHERE share_link_items.share_id = ?
-        AND epg_programs.start_at - ? <= ?
-        AND ? <= epg_programs.end_at + ?
-      ORDER BY epg_programs.start_at
-      LIMIT 1
-    `,
-    )
-    .get(shareId, config.streamGraceSeconds, now(), now(), config.streamGraceSeconds);
+  return selectActiveShareProgram(db, shareId, config.streamGraceSeconds, now());
 }
 
 function restoreMissingTemporaryShareItems(share) {
@@ -2831,7 +2816,8 @@ app.get("/api/public/share/:slug", async (req, res) => {
     if (!locked) {
       queueStaticShareBackgroundWarm(staticShare.id, "public-share-load");
     }
-    const activeEvent = locked ? null : await findActiveStaticEvent(staticShare.id, { allowNetwork: false });
+    const cachedActiveEvent = locked ? null : await findActiveStaticEvent(staticShare.id, { allowNetwork: false });
+    const activeEvent = cachedActiveEvent || (locked ? null : await findActiveStaticEvent(staticShare.id));
     const events = publicStaticEvents(staticShare);
     const streamKind = activeEvent ? inferStreamKind(activeEvent.stream_url) : null;
     const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
@@ -2905,7 +2891,7 @@ app.get("/api/public/share/:slug", async (req, res) => {
   const streamKind = inferStreamKind(activeProgram?.stream_url || share.stream_url);
   const useFmp4 = config.transcodeMpegTs && streamKind === "mpegts";
   const playback = payload.stream_available
-    ? publicStreamUrls(req, { kind: "temporary", shareId: share.id, slug: share.slug, useHls: useFmp4 })
+    ? publicStreamUrls(req, { kind: "temporary", shareId: share.id, slug: share.slug, eventId: activeProgram?.id, useHls: useFmp4 })
     : null;
   payload.stream_url = playback?.streamUrl || null;
   payload.hls_url = playback?.hlsUrl || null;
@@ -3118,7 +3104,17 @@ app.get("/api/public/stream/:slug", async (req, res) => {
           )
            .get(staticShare.id, req.query.event)
        : await findActiveStaticEvent(staticShare.id);
-    const entitlement = event ? await resolveScheduledStreamEntitlement(event) : null;
+    const isHlsSegment = req.query.hls === "1" && Boolean(req.query.segment);
+    let entitlement = null;
+    if (event) {
+      if (isHlsSegment) {
+        const snapshot = resolveScheduledStreamEntitlementFromSnapshot(event);
+        const hasActiveSession = activeHlsSessionForShare(req.query.session, staticShare.slug);
+        entitlement = { ...snapshot, streamable: staticHlsSegmentIsStreamable(event, snapshot, hasActiveSession) };
+      } else {
+        entitlement = await resolveScheduledStreamEntitlement(event);
+      }
+    }
     if (!entitlement?.streamable) {
       res.status(403).send("Scheduled event is not currently streamable");
       return;

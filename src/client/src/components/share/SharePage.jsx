@@ -121,11 +121,24 @@ function SharePage({ slug }) {
     const nextEvent = schedule.find((program) => eventStart(program) > current);
     const activeEvent = schedule.find((program) => program.id === share.active_event_id || program.id === share.active_program_id);
     const liveEvent = activeEvent || schedule.find((program) => eventStart(program) <= current && current <= eventEnd(program));
-    const reloadAt = share.stream_url && activeEvent?.espn
+    const programReloadAt = activeEvent
+      ? current < eventStart(activeEvent)
+        ? eventStart(activeEvent)
+        : current < eventEnd(activeEvent)
+          ? eventEnd(activeEvent)
+          : current + 60
+      : current + 60;
+    const reloadAt = share.stream_url && share.mode === "programs"
+      ? programReloadAt
+      : share.stream_url && activeEvent?.espn
       ? current + 60
       : share.stream_url
         ? (eventEnd(liveEvent || share) + 305)
-      : eventStart(nextEvent || share);
+        : nextEvent
+          ? eventStart(nextEvent)
+          : share.kind === "static"
+            ? current + 60
+            : eventStart(share);
     if (!Number(reloadAt) || reloadAt <= current) return undefined;
     const timer = setTimeout(loadShare, Math.max(1000, (reloadAt - current) * 1000 + 1000));
     return () => clearTimeout(timer);

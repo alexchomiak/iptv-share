@@ -13,13 +13,14 @@ const request = {
 test("public playback URLs are absolute and carry valid scoped viewer access", () => {
   const result = publicStreamUrls(
     request,
-    { kind: "temporary", shareId: 7, slug: "demo", useHls: true },
+    { kind: "temporary", shareId: 7, slug: "demo", eventId: 42, useHls: true },
     { viewerToken: "a".repeat(48), publicBaseUrl: "" },
   );
   const stream = new URL(result.streamUrl);
   const hls = new URL(result.hlsUrl);
   assert.equal(stream.origin, "http://localhost:8080");
   assert.equal(stream.pathname, "/api/public/stream/demo");
+  assert.equal(stream.searchParams.get("event"), "42");
   assert.equal(stream.searchParams.get("viewer"), "a".repeat(48));
   assert.equal(hls.searchParams.get("hls"), "1");
   assert.equal(hls.searchParams.get("viewer"), stream.searchParams.get("viewer"));

@@ -130,20 +130,20 @@ export function proxyFmp4Stream(req, res, targetUrl) {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Accel-Buffering", "no");
 
-    req.on("close", () => {
+    res.on("close", () => {
       if (!ffmpeg.killed) ffmpeg.kill("SIGTERM");
     });
 
     pipeline(ffmpeg.stdout, res)
       .then(() => resolve())
       .catch((error) => {
-        if (req.destroyed || res.destroyed) resolve();
+        if (res.destroyed) resolve();
         else reject(error);
       });
 
     ffmpeg.on("error", reject);
     ffmpeg.on("close", (code) => {
-      if (code && code !== 255 && !req.destroyed && !res.destroyed) {
+      if (code && code !== 255 && !res.destroyed) {
         reject(new Error(stderr.trim() || `FFmpeg exited with code ${code}`));
       } else {
         resolve();
@@ -192,6 +192,16 @@ function playlistSegments(playlist) {
     .map((line) => path.basename(line));
 }
 
+export function playlistHasRecentSegment(playlist, dir, now = Date.now(), maxAgeMs = 20000) {
+  const lastSegment = playlistSegments(playlist).at(-1);
+  if (!lastSegment) return false;
+  try {
+    return now - fs.statSync(path.join(dir, lastSegment)).mtimeMs <= maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
 function waitForPlaylistSegments(session, timeoutMs = 14000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
@@ -199,13 +209,13 @@ function waitForPlaylistSegments(session, timeoutMs = 14000) {
       if (fs.existsSync(session.playlistPath)) {
         const playlist = fs.readFileSync(session.playlistPath, "utf8");
         const readySegments = playlistSegments(playlist).filter((segment) => fs.existsSync(path.join(session.dir, segment)));
-        if (readySegments.length >= 2) {
+        if (readySegments.length >= 2 && playlistHasRecentSegment(playlist, session.dir)) {
           resolve(playlist);
           return;
         }
       }
       if (Date.now() - started > timeoutMs) {
-        reject(new Error(session.stderr?.trim() || "Timed out waiting for HLS segments"));
+        reject(new Error("HLS playlist has not produced recent segments"));
         return;
       }
       setTimeout(check, 250);
@@ -290,7 +300,7 @@ export function hlsCodecPlan(codecs, compatibilityMode = false) {
   const videoTranscodeArgs =
     videoTranscodeMode === "vaapi"
       ? ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi", "-qp", "23"]
-      : ["-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"];
+      : ["-c:v", "libx264", "-preset", compatibilityMode ? "ultrafast" : "veryfast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"];
 
   return {
     codecs,
@@ -329,6 +339,11 @@ function stopHlsSession(session, reason = "cleanup") {
 
 export function stopAllHlsSessions() {
   for (const session of hlsSessions.values()) stopHlsSession(session, "shutdown");
+}
+
+export function activeHlsSessionForShare(id, slug) {
+  const session = hlsSessionsById.get(String(id || ""));
+  return Boolean(session && !session.stopped && session.slug === slug);
 }
 
 export function hlsCleanupCutoffAt(startedAt, cutoffWindow) {
@@ -441,7 +456,7 @@ function launchHlsProcess(session) {
       "-hls_list_size",
       "12",
       "-hls_flags",
-      `${restarting ? "append_list+discont_start+" : ""}omit_endlist+independent_segments`,
+      `${restarting ? "append_list+discont_start+" : ""}omit_endlist${session.videoMode === "copy" ? "" : "+independent_segments"}`,
       "-hls_segment_filename",
       path.join(dir, "segment_%05d.ts"),
       playlistPath,
@@ -567,6 +582,7 @@ function requestModule(url) {
 function proxyStreamNative(req, res, targetUrl, slug, redirectCount, extraParams = {}) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(targetUrl);
+    const startedAt = Date.now();
     const headers = {
       "User-Agent": "iptv-share/0.2",
       Accept: "*/*",
@@ -583,6 +599,7 @@ function proxyStreamNative(req, res, targetUrl, slug, redirectCount, extraParams
       }
 
       if (upstream.statusCode < 200 || upstream.statusCode > 299) {
+        console.warn(`Stream upstream rejected: share=${JSON.stringify(slug)} status=${upstream.statusCode} age=${Date.now() - startedAt}ms`);
         upstream.resume();
         res.status(upstream.statusCode || 502).send("Upstream stream failed");
         resolve();
@@ -617,15 +634,31 @@ function proxyStreamNative(req, res, targetUrl, slug, redirectCount, extraParams
         if (value) res.setHeader(header, value);
       }
 
+      let bytes = 0;
+      let viewerDisconnected = false;
+      upstream.on("data", (chunk) => { bytes += chunk.length; });
+      upstream.on("end", () => {
+        console.info(`Stream upstream ended: share=${JSON.stringify(slug)} age=${Date.now() - startedAt}ms bytes=${bytes} status=${upstream.statusCode}`);
+      });
+      upstream.on("error", (error) => {
+        if (!viewerDisconnected) console.warn(`Stream upstream error: share=${JSON.stringify(slug)} age=${Date.now() - startedAt}ms bytes=${bytes} reason=${error.message}`);
+      });
+
+      res.on("close", () => { viewerDisconnected = !res.writableFinished; });
       pipeline(upstream, res).then(resolve).catch((error) => {
-        if (req.destroyed || res.destroyed) resolve();
+        if (res.destroyed) resolve();
         else reject(error);
       });
     });
 
-    upstreamReq.setTimeout(15000, () => upstreamReq.destroy(new Error("Upstream stream timed out")));
+    upstreamReq.setTimeout(15000, () => upstreamReq.destroy(new Error("Upstream stream inactive for 15 seconds")));
     upstreamReq.on("error", reject);
-    req.on("close", () => upstreamReq.destroy());
+    res.on("close", () => {
+      if (!upstreamReq.destroyed && !res.writableFinished) {
+        console.info(`Stream viewer disconnected: share=${JSON.stringify(slug)} age=${Date.now() - startedAt}ms`);
+      }
+      upstreamReq.destroy();
+    });
     upstreamReq.end();
   });
 }

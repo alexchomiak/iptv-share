@@ -4,7 +4,7 @@ import http from "node:http";
 import { spawnSync } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { once } from "node:events";
-import { numberHlsDiscontinuities, serveHlsRemuxPlaylist, serveHlsRemuxSegment, stopAllHlsSessions } from "../src/server/stream.js";
+import { activeHlsSessionForShare, numberHlsDiscontinuities, serveHlsRemuxPlaylist, serveHlsRemuxSegment, stopAllHlsSessions } from "../src/server/stream.js";
 
 test("sliding HLS playlists retain discontinuity numbering after markers age out", () => {
   const boundaries = new Set([34, 74]);
@@ -85,6 +85,8 @@ test("HLS continues numbering and marks a discontinuity after upstream EOF and a
     const first = await playlistFor(sourceUrl);
     const firstSession = first.match(/[?&]session=([^&\s]+)/)?.[1];
     assert.ok(firstSession);
+    assert.equal(activeHlsSessionForShare(firstSession, "test"), true);
+    assert.equal(activeHlsSessionForShare(firstSession, "other-share"), false);
     assert.match(first, /segment_00000\.ts/);
     const firstSegment = first.split(/\r?\n/).find((line) => line.includes("segment_00000.ts"));
     assert.ok(firstSegment);

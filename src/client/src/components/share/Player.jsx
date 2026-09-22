@@ -22,12 +22,43 @@ function attachHlsJs(video, source, setMessage) {
     maxMaxBufferLength: 120,
     liveSyncDurationCount: 3,
   });
+  let stopped = false;
+  let networkRetryTimer = null;
+  let networkRetryCount = 0;
+  let lastMediaRecoveryAt = 0;
+  hls.on(Hls.Events.FRAG_BUFFERED, () => { networkRetryCount = 0; });
   hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (data.fatal) setMessage(`HLS playback failed: ${data.details || data.type}`);
+    if (!data.fatal) return;
+    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && ![401, 403].includes(data.response?.code)) {
+      if (networkRetryTimer) return;
+      const delay = Math.min(30000, 2000 * 2 ** Math.min(networkRetryCount, 4));
+      networkRetryCount += 1;
+      setMessage(`Stream interrupted. Retrying in ${Math.ceil(delay / 1000)} seconds...`);
+      networkRetryTimer = setTimeout(() => {
+        networkRetryTimer = null;
+        if (stopped) return;
+        if ([Hls.ErrorDetails.MANIFEST_LOAD_ERROR, Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT].includes(data.details)) {
+          hls.loadSource(source);
+        } else {
+          hls.startLoad();
+        }
+      }, delay);
+      return;
+    }
+    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && Date.now() - lastMediaRecoveryAt > 60000) {
+      lastMediaRecoveryAt = Date.now();
+      hls.recoverMediaError();
+      return;
+    }
+    setMessage(`HLS playback failed: ${data.details || data.type}`);
   });
   hls.loadSource(source);
   hls.attachMedia(video);
-  return () => hls.destroy();
+  return () => {
+    stopped = true;
+    if (networkRetryTimer) clearTimeout(networkRetryTimer);
+    hls.destroy();
+  };
 }
 
 function attachNativeVideo(video, source) {
@@ -36,7 +67,8 @@ function attachNativeVideo(video, source) {
   return () => {};
 }
 
-function attachMpegTs(video, source, setMessage) {
+function attachMpegTs(video, source, setMessage, onEnded) {
+  let active = true;
   const player = mpegts.createPlayer(
     {
       type: "mse",
@@ -68,9 +100,13 @@ function attachMpegTs(video, source, setMessage) {
       setMessage(`MPEG-TS playback failed: ${[type, detail, cleanInfo].filter(Boolean).join(" / ") || "stream error"}`);
     }
   });
+  player.on(mpegts.Events.LOADING_COMPLETE, () => {
+    if (active) onEnded();
+  });
   player.attachMediaElement(video);
   player.load();
   return () => {
+    active = false;
     player.unload();
     player.detachMediaElement();
     player.destroy();
@@ -103,12 +139,16 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
   const videoRef = React.useRef(null);
   const [message, setMessage] = useState("");
   const [armed, setArmed] = useState(false);
+  const [restartAttempt, setRestartAttempt] = useState(0);
+  const [streamEnded, setStreamEnded] = useState(false);
+  const [compatibilityPlayback, setCompatibilityPlayback] = useState(false);
   const armPlayback = () => setArmed(true);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return undefined;
     setMessage("");
+    setStreamEnded(false);
     video.removeAttribute("src");
     video.load();
     if (!armed) {
@@ -125,8 +165,17 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     const clearRecoveredError = () => {
       if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.paused) setMessage("");
     };
+    const streamSrc = withViewerToken(src, viewerToken);
+    const streamHlsSrc = withViewerToken(hlsSrc, viewerToken);
+    const compatibleHlsSrc = streamHlsSrc ? nativeHlsPlaybackUrl(streamHlsSrc, window.location.origin) : null;
     let playbackLabel = "Native video";
-    const reportNativeError = () => setMessage(describeVideoError(video, playbackLabel));
+    const reportNativeError = () => {
+      if (playbackLabel === "MPEG-TS" && video.error?.code === 3 && compatibleHlsSrc && (Hls.isSupported() || nativeHlsSupported)) {
+        setCompatibilityPlayback(true);
+        return;
+      }
+      setMessage(describeVideoError(video, playbackLabel));
+    };
     const reportActive = () => onPlaybackActive?.(true);
     const reportInactive = () => onPlaybackActive?.(false);
     video.addEventListener("playing", clearRecoveredError);
@@ -137,10 +186,14 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
     video.addEventListener("error", reportNativeError);
 
     let cleanup = () => {};
-    const streamSrc = withViewerToken(src, viewerToken);
-    const streamHlsSrc = withViewerToken(hlsSrc, viewerToken);
 
-    if (kind === "hls" && nativeHlsSupported) {
+    if (kind === "mpegts" && compatibilityPlayback && compatibleHlsSrc && Hls.isSupported()) {
+      playbackLabel = "Compatibility HLS";
+      cleanup = attachHlsJs(video, compatibleHlsSrc, setMessage);
+    } else if (kind === "mpegts" && compatibilityPlayback && compatibleHlsSrc && nativeHlsSupported) {
+      playbackLabel = "Compatibility HLS";
+      cleanup = attachNativeVideo(video, compatibleHlsSrc);
+    } else if (kind === "hls" && nativeHlsSupported) {
       playbackLabel = "HLS";
       cleanup = attachNativeVideo(video, streamSrc);
     } else if (kind === "hls" && Hls.isSupported()) {
@@ -151,7 +204,15 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       cleanup = attachNativeVideo(video, nativeHlsPlaybackUrl(streamHlsSrc, window.location.origin));
     } else if (kind === "mpegts" && mpegts.getFeatureList().mseLivePlayback) {
       playbackLabel = "MPEG-TS";
-      cleanup = attachMpegTs(video, streamSrc, setMessage);
+      cleanup = attachMpegTs(video, streamSrc, setMessage, () => {
+        if (compatibleHlsSrc && (Hls.isSupported() || nativeHlsSupported)) {
+          setCompatibilityPlayback(true);
+          return;
+        }
+        setStreamEnded(true);
+        setMessage("The live stream ended upstream. You can restart playback.");
+        onPlaybackActive?.(false);
+      });
     } else if (kind === "mpegts" && streamHlsSrc && nativeHlsSupported) {
       playbackLabel = "HLS remux";
       cleanup = attachNativeVideo(video, nativeHlsPlaybackUrl(streamHlsSrc, window.location.origin));
@@ -177,7 +238,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
       video.removeAttribute("src");
       video.load();
     };
-  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive, armed]);
+  }, [src, hlsSrc, kind, viewerToken, onPlaybackActive, armed, restartAttempt, compatibilityPlayback]);
 
   return (
     <section className="playerArea">
@@ -201,6 +262,7 @@ function Player({ src, hlsSrc, kind, viewerToken, onPlaybackActive }) {
         </button>
       )}
       {message && <p className="playerMessage">{message}</p>}
+      {streamEnded && <button type="button" onClick={() => setRestartAttempt((attempt) => attempt + 1)}>Restart playback</button>}
     </section>
   );
 }

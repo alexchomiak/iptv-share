@@ -65,6 +65,8 @@ DATABASE_PATH=/data/app.sqlite
 M3U_URL=https://example.com/playlist.m3u
 EPG_URL=https://example.com/guide.xml
 PUBLIC_BASE_URL=https://your-public-host.example
+DISPATCHARR_USERNAME=your-dispatcharr-username
+DISPATCHARR_PASSWORD=your-dispatcharr-password
 EPG_REFRESH_SECONDS=21600
 STREAM_GRACE_SECONDS=0
 SHARE_AUTO_DELETE_SECONDS=300
@@ -84,6 +86,8 @@ PORT=8080
 ```
 
 Mount `/data` as persistent storage.
+
+If Dispatcharr is the M3U source, set `DISPATCHARR_USERNAME` and `DISPATCHARR_PASSWORD` on the ShareTV container to let the NFL mapper read the names of streams assigned to each channel. It derives Dispatcharr's base URL from `M3U_URL`; set `DISPATCHARR_BASE_URL` only if the API uses a different origin. When the upstream NFL EPG has no slot assignment, the mapper uses an assigned stream name only after matching its two teams to an ESPN game. Keep the credentials in your deployment environment, not in this repository.
 
 For a currently streamable channel whose source is a platform page on `PLATFORM_MEDIA_HOSTS`, the share API includes that original page as optional `media_url` with `media_kind: "platform"`. A machine consumer can pass it to its own `yt-dlp`.
 

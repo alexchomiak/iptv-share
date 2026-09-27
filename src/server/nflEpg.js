@@ -1,6 +1,7 @@
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { getEspnGameSummary, searchEspnGames } from "./espn.js";
+import { cachedDispatcharrStreamNames } from "./dispatcharrStreams.js";
 import { XMLParser } from "fast-xml-parser";
 import { gunzipSync } from "node:zlib";
 
@@ -286,6 +287,23 @@ function matchupFromProgramTitle(title = "") {
   return displayMatchup(cleaned);
 }
 
+function matchupFromStreamName(name = "") {
+  const parts = String(name).split(/\s+@\s+|\s+at\s+|\s+vs\.?\s+/i);
+  if (parts.length < 2) return null;
+  const findTeam = (fragment, last) => {
+    const text = normalizeTeamToken(fragment);
+    const matches = NFL_TEAMS.flatMap((team) => team.aliases.flatMap((alias) => {
+      const index = ` ${text} `.indexOf(` ${alias} `);
+      return index < 0 ? [] : [{ team, index, length: alias.length }];
+    }));
+    matches.sort((a, b) => last ? b.index - a.index || b.length - a.length : a.index - b.index || b.length - a.length);
+    return matches[0]?.team;
+  };
+  const away = findTeam(parts[0], true);
+  const home = findTeam(parts[1], false);
+  return away && home && away !== home ? `${away.display} at ${home.display}` : null;
+}
+
 function aliasesOverlap(left = "", right = "") {
   const leftAliases = new Set(teamAliasesFor(left));
   return teamAliasesFor(right).some((alias) => leftAliases.has(alias));
@@ -301,17 +319,12 @@ function sameMatchup(leftTitle = "", rightTitle = "") {
 function matchupMatches(programTitle, event) {
   const matchup = splitMatchup(programTitle);
   if (!matchup || !event) return false;
-  const haystack = normalizeTeamToken([
-    event.name,
-    event.shortName,
-    event.away?.name,
-    event.away?.abbreviation,
-    event.home?.name,
-    event.home?.abbreviation,
-  ].join(" "));
-  const awayAliases = teamAliasesFor(matchup.away);
-  const homeAliases = teamAliasesFor(matchup.home);
-  return awayAliases.some((alias) => haystack.includes(alias)) && homeAliases.some((alias) => haystack.includes(alias));
+  const eventMatchup = event.away?.name && event.home?.name
+    ? { away: event.away.name, home: event.home.name }
+    : splitMatchup(event.name || event.shortName);
+  return !!eventMatchup
+    && aliasesOverlap(matchup.away, eventMatchup.away)
+    && aliasesOverlap(matchup.home, eventMatchup.home);
 }
 
 function recordFor(competitor = {}) {
@@ -472,14 +485,14 @@ function normalizeGanjaProgram(program, channelName, slot) {
 
 async function enrichGameProgram(program) {
   if (!program?.title || program.source?.startsWith("generated-")) return program;
-  const cacheKey = `${ESPN_ENRICHMENT_CACHE_VERSION}:${program.startAt}:${program.title}`;
+  const cacheKey = `${ESPN_ENRICHMENT_CACHE_VERSION}:${program.source}:${program.startAt}:${program.title}`;
   const cached = enrichmentCache.get(cacheKey);
   const current = Math.floor(Date.now() / 1000);
   if (cached && cached.expiresAt > current) return { ...program, ...cached.patch };
 
   try {
     const searchStart = program.startAt - 24 * 60 * 60;
-    const searchEnd = program.startAt + 24 * 60 * 60;
+    const searchEnd = program.startAt + (program.source === "dispatcharr-stream" ? 7 : 1) * 24 * 60 * 60;
     const { games } = await searchEspnGames({
       league: "nfl",
       q: "",
@@ -555,7 +568,11 @@ async function ganjaPrograms() {
         .filter((program) => program.endAt >= current - 3 * 24 * 60 * 60 && program.startAt <= current + 14 * 24 * 60 * 60)
         .sort((a, b) => a.startAt - b.startAt);
       if (!programs.length) {
-        sourceCache = { ...sourceCache, retryAfter: current + 300, error: "NFL source returned no usable upcoming programs" };
+        sourceCache = {
+          ...sourceCache,
+          retryAfter: current + Math.max(900, config.nflMapperSourceCacheSeconds),
+          error: "NFL source returned no usable upcoming programs",
+        };
       } else {
         sourceCache = { fetchedAt: current, retryAfter: 0, programs, error: "" };
       }
@@ -570,7 +587,7 @@ async function ganjaPrograms() {
 }
 
 function fallbackProgramForChannel(row, nowDate) {
-  return parseNflM3uTitle(row.source_title || row.name, nowDate);
+  return parseNflM3uTitle(row.source_title, nowDate) || parseNflM3uTitle(row.name, nowDate);
 }
 
 function makeGuideProgram({ title, subtitle = "NFL Football", description, startAt, endAt, slot, source, channelName, icon = "" }) {
@@ -634,7 +651,7 @@ function addFiller(programs, { startAt, endAt, slot, channelName }) {
   }));
 }
 
-function expandedDailyPrograms(games, { slot, channelName, nowDate }) {
+function expandedDailyPrograms(games, { slot, channelName, nowDate, unavailable = false }) {
   const programs = [];
   const gamesByDay = new Map();
   for (const game of games) {
@@ -651,9 +668,11 @@ function expandedDailyPrograms(games, { slot, channelName, nowDate }) {
 
     if (!dayGames.length) {
       programs.push(makeGuideProgram({
-        title: "No Game Today",
+        title: unavailable ? "Schedule Unavailable" : "No Game Today",
         subtitle: "NFL Sunday Ticket",
-        description: nextGameDescription(games, dayEnd),
+        description: unavailable
+          ? "The NFL slot-to-game assignment is unavailable from the source EPG and assigned stream names."
+          : nextGameDescription(games, dayEnd),
         startAt: dayStart,
         endAt: dayEnd,
         slot,
@@ -712,12 +731,19 @@ export async function generatedNflMappings() {
   const rows = localNflChannels();
   const nowDate = new Date();
   const source = await ganjaPrograms();
+  let streamNames = new Map();
+  let streamError = "";
+  try {
+    streamNames = await cachedDispatcharrStreamNames();
+  } catch (error) {
+    streamError = error.message;
+  }
   return Promise.all(rows.map(async (row) => {
     const channelId = row.tvg_id || `sharetv-channel-${row.id}`;
     const slot = extractNflSlot(row.source_title) || extractNflSlot(row.name) || extractNflSlot(row.tvg_id);
     const sourcePrograms = slot ? source.programs.filter((program) => program.slot === slot) : [];
     const fallback = fallbackProgramForChannel(row, nowDate);
-    const scheduledPrograms = fallback
+    const sourceSchedulePrograms = fallback
       ? alignSourceProgramsToLocalSchedule(sourcePrograms, { ...fallback, source: "m3u-title", slot })
       : sourcePrograms.flatMap((program) => {
           // A bare local slot can still have an explicit matchup assignment in
@@ -730,14 +756,30 @@ export async function generatedNflMappings() {
           const title = matchupFromProgramTitle(program.title);
           return title ? [{ ...program, title, slot, source: "ganja-title" }] : [];
         });
-    const enrichedGames = await Promise.all(
-      mergeGamePrograms(scheduledPrograms)
-        .map((program) => enrichGameProgram(program)),
+    const streamPrograms = [...new Set((streamNames.get(row.tvg_id) || []).map(matchupFromStreamName).filter(Boolean))]
+        .map((title) => ({
+          title, subtitle: "NFL Football", description: title, category: "Sports",
+          startAt: Math.floor(nowDate.getTime() / 1000),
+          endAt: Math.floor(nowDate.getTime() / 1000) + config.nflMapperDurationSeconds,
+          slot, source: "dispatcharr-stream", channelName: row.name,
+        }));
+    const enrichedSource = await Promise.all(
+      mergeGamePrograms(sourceSchedulePrograms).map((program) => enrichGameProgram(program)),
     );
-    const games = mergeGamePrograms(enrichedGames.filter((program) =>
-      program.source !== "ganja-title" || program.espnEventId,
-    ));
-    const programs = slot ? expandedDailyPrograms(games, { slot, channelName: row.name, nowDate }) : [];
+    const guideStart = localDayStart(localDayParts(nowDate));
+    const sourceGames = enrichedSource.filter((program) =>
+      (program.source !== "ganja-title" || program.espnEventId) &&
+      program.endAt > guideStart,
+    );
+    const enrichedStreams = sourceGames.length ? [] : await Promise.all(
+      streamPrograms.map((program) => enrichGameProgram(program)),
+    );
+    const streamGames = enrichedStreams.filter((program) => program.espnEventId);
+    const games = mergeGamePrograms(sourceGames.length ? sourceGames : streamGames.slice(0, 1));
+    const programs = slot ? expandedDailyPrograms(games, {
+      slot, channelName: row.name, nowDate,
+      unavailable: !games.length && !fallback && (!!source.error || !!streamError),
+    }) : [];
     return {
       channel: {
         id: row.id,
@@ -753,7 +795,7 @@ export async function generatedNflMappings() {
       programs,
       program: programs[0] || null,
       parsed: programs.length > 0,
-      sourceError: source.error,
+      sourceError: [source.error, streamError].filter(Boolean).join("; "),
     };
   }));
 }

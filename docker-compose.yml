@@ -12,6 +12,8 @@ services:
       SESSION_SECRET: x
       DATABASE_PATH: /data/app.sqlite
       M3U_URL: http://192.168.0.37:9191/output/m3u
+      DISPATCHARR_USERNAME: ${DISPATCHARR_USERNAME:-}
+      DISPATCHARR_PASSWORD: ${DISPATCHARR_PASSWORD:-}
       EPG_URL: http://192.168.0.37:9191/output/epg
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       SHARE_AUTO_DELETE_SECONDS: 300

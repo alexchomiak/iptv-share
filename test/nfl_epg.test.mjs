@@ -11,14 +11,14 @@ const source = fs.readFileSync(new URL("../src/server/nflEpg.js", import.meta.ur
   .replace(/^export /gm, "");
 const sunday = Date.parse("2026-09-13T14:00:00Z");
 const kickoff = Date.parse("2026-09-13T17:00:00Z") / 1000;
-function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true, sourceLabel = "NFL | 08 - 1pm Bears at Panthers", nowMs = sunday } = {}) {
+function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true, sourceLabel = "NFL | 08 - 1pm Bears at Panthers", programmeTitle = "Coming Up: Chicago Bears @ Carolina Panthers", streamTitles = [], nowMs = sunday } = {}) {
   class FixedDate extends Date {
     constructor(...args) { super(...(args.length ? args : [nowMs])); }
     static now() { return nowMs; }
   }
   let searches = 0;
   const label = sourceLabel;
-  const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>Coming Up: Chicago Bears @ Carolina Panthers</title></programme>`).join("")}</tv>`;
+  const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>${programmeTitle}</title></programme>`).join("")}</tv>`;
   const context = vm.createContext({
     Date: FixedDate, Intl, Buffer, AbortSignal, XMLParser, gunzipSync,
     config: { nflMapperTimezone: "America/New_York", nflMapperDurationSeconds: 21600, nflMapperSourceUrl: "https://fixture.test/guide.xml", nflMapperSourceCacheSeconds: 86400 },
@@ -30,6 +30,7 @@ function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", 
       return { games: [{ id: "verified-game", name: "Chicago Bears at Carolina Panthers", date: eventDate, away: { name: "Chicago Bears", abbreviation: "CHI" }, home: { name: "Carolina Panthers", abbreviation: "CAR" } }] };
     },
     getEspnGameSummary: async () => ({ summary: {}, cache: "hit" }),
+    cachedDispatcharrStreamNames: async () => new Map([["slot08", streamTitles]]),
   });
   vm.runInContext(source, context);
   return { context, searches: () => searches };
@@ -65,6 +66,38 @@ test("title-only source does not invent a kickoff when ESPN is unavailable", asy
   const { context } = fixture({ sourceLabel: "NFL | 08", available: false });
   const [mapping] = await context.generatedNflMappings();
   assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+});
+
+test("Dispatcharr stream title restores a bare slot when source EPG has no assignment", async () => {
+  const { context } = fixture({ sourceLabel: "NFL | 08", programmeTitle: "No Event", streamTitles: ["NFL 08 - Bears @ Panthers HD"] });
+  const [mapping] = await context.generatedNflMappings();
+  const game = mapping.programs.find(p => p.title === "Chicago Bears at Carolina Panthers");
+  assert.equal(game?.startAt, kickoff);
+  assert.equal(game?.source, "dispatcharr-stream");
+});
+
+test("Dispatcharr title without a matching ESPN event does not invent a game", async () => {
+  const { context } = fixture({ sourceLabel: "NFL | 08", programmeTitle: "No Event", streamTitles: ["NFL 08 - Bears @ Panthers HD"], available: false });
+  const [mapping] = await context.generatedNflMappings();
+  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+});
+
+test("ESPN matchup requires the correct away and home teams", () => {
+  const { context } = fixture();
+  const chiefsDolphins = {
+    name: "Kansas City Chiefs at Miami Dolphins",
+    away: { name: "Kansas City Chiefs", abbreviation: "KC" },
+    home: { name: "Miami Dolphins", abbreviation: "MIA" },
+  };
+  assert.equal(context.matchupMatches("Philadelphia Eagles at Chicago Bears", chiefsDolphins), false);
+  assert.equal(context.matchupMatches("Kansas City Chiefs at Miami Dolphins", chiefsDolphins), true);
+  assert.equal(context.matchupMatches("Miami Dolphins at Kansas City Chiefs", chiefsDolphins), false);
+});
+
+test("missing slot mappings are reported as unavailable, not No Game Today", async () => {
+  const { context } = fixture({ sourceLabel: "NFL | 08", programmeTitle: "No Event" });
+  const [mapping] = await context.generatedNflMappings();
+  assert.equal(mapping.programs[0].title, "Schedule Unavailable");
 });
 
 test("Sunday game remains mapped after early source XMLTV rows age past twelve hours", async () => {

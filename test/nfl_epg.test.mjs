@@ -11,13 +11,13 @@ const source = fs.readFileSync(new URL("../src/server/nflEpg.js", import.meta.ur
   .replace(/^export /gm, "");
 const sunday = Date.parse("2026-09-13T14:00:00Z");
 const kickoff = Date.parse("2026-09-13T17:00:00Z") / 1000;
-class FixedDate extends Date {
-  constructor(...args) { super(...(args.length ? args : [sunday])); }
-  static now() { return sunday; }
-}
-function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true } = {}) {
+function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true, sourceLabel = "NFL | 08 - 1pm Bears at Panthers", nowMs = sunday } = {}) {
+  class FixedDate extends Date {
+    constructor(...args) { super(...(args.length ? args : [nowMs])); }
+    static now() { return nowMs; }
+  }
   let searches = 0;
-  const label = "NFL | 08 - 1pm Bears at Panthers";
+  const label = sourceLabel;
   const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>Coming Up: Chicago Bears @ Carolina Panthers</title></programme>`).join("")}</tv>`;
   const context = vm.createContext({
     Date: FixedDate, Intl, Buffer, AbortSignal, XMLParser, gunzipSync,
@@ -51,6 +51,32 @@ test("source assignment still publishes when optional ESPN enrichment is unavail
   const game = mapping.programs.find(p => p.title === "Chicago Bears at Carolina Panthers");
   assert.ok(game);
   assert.equal(game.espnEventId, undefined);
+});
+
+test("bare source slot can use matchup in XMLTV program title and verified ESPN kickoff", async () => {
+  const { context } = fixture({ sourceLabel: "NFL | 08" });
+  const [mapping] = await context.generatedNflMappings();
+  const games = mapping.programs.filter(p => p.title === "Chicago Bears at Carolina Panthers");
+  assert.equal(games.length, 1);
+  assert.equal(games[0].startAt, kickoff);
+});
+
+test("title-only source does not invent a kickoff when ESPN is unavailable", async () => {
+  const { context } = fixture({ sourceLabel: "NFL | 08", available: false });
+  const [mapping] = await context.generatedNflMappings();
+  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+});
+
+test("Sunday game remains mapped after early source XMLTV rows age past twelve hours", async () => {
+  const { context } = fixture({ nowMs: Date.parse("2026-09-14T03:00:00Z") });
+  const [mapping] = await context.generatedNflMappings();
+  assert.ok(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"));
+});
+
+test("old Sunday source rows do not roll into the following Sunday", async () => {
+  const { context } = fixture({ nowMs: Date.parse("2026-09-14T05:00:00Z") });
+  const [mapping] = await context.generatedNflMappings();
+  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
 });
 
 test("stale source matchup stays on the ESPN date instead of moving to this Sunday", async () => {

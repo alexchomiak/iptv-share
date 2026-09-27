@@ -19,7 +19,7 @@ export const config = {
   nflMapperTimezone: process.env.NFL_MAPPER_TIMEZONE || "America/New_York",
   nflMapperDurationSeconds: numberEnv("NFL_MAPPER_DURATION_SECONDS", 6 * 60 * 60),
   nflMapperSourceUrl: process.env.NFL_MAPPER_SOURCE_URL || "https://github.com/ferteque/Curated-M3U-Repository/raw/refs/heads/main/epg6.xml.gz",
-  nflMapperSourceCacheSeconds: numberEnv("NFL_MAPPER_SOURCE_CACHE_SECONDS", 24 * 60 * 60),
+  nflMapperSourceCacheSeconds: numberEnv("NFL_MAPPER_SOURCE_CACHE_SECONDS", 60 * 60),
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
   epgRefreshSeconds: Number(process.env.EPG_REFRESH_SECONDS || 21600),
   streamGraceSeconds: Number(process.env.STREAM_GRACE_SECONDS || 600),

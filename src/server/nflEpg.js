@@ -39,6 +39,7 @@ const GENERATED_DAYS = 14;
 const PREGAME_SECONDS = 60 * 60;
 const POSTGAME_SECONDS = 60 * 60;
 const ESPN_ENRICHMENT_CACHE_SECONDS = 24 * 60 * 60;
+const ESPN_ENRICHMENT_FAILURE_CACHE_SECONDS = 5 * 60;
 const ESPN_ENRICHMENT_CACHE_VERSION = 2;
 const NFL_TEAMS = [
   ["Arizona Cardinals", "ari", "cardinals"],
@@ -274,6 +275,17 @@ function displayMatchup(title = "") {
   return `${fullTeamName(matchup.away)} at ${fullTeamName(matchup.home)}`;
 }
 
+function matchupFromProgramTitle(title = "") {
+  const cleaned = stripNflPrefix(title)
+    .replace(/^(?:coming\s+up|live|next|game)\s*[:\-]\s*/i, "")
+    .trim();
+  const matchup = splitMatchup(cleaned);
+  if (!matchup) return null;
+  const knownTeam = (value) => NFL_TEAMS.some((team) => team.aliases.includes(normalizeTeamToken(value)));
+  if (!knownTeam(matchup.away) || !knownTeam(matchup.home)) return null;
+  return displayMatchup(cleaned);
+}
+
 function aliasesOverlap(left = "", right = "") {
   const leftAliases = new Set(teamAliasesFor(left));
   return teamAliasesFor(right).some((alias) => leftAliases.has(alias));
@@ -435,9 +447,9 @@ function normalizeGanjaProgram(program, channelName, slot) {
   if (isNoiseProgram(title)) return null;
   const startAt = parseXmltvTime(program["@_start"]);
   if (!startAt) return null;
-  const sourceSchedule = parseNflM3uTitle(channelName);
+  const sourceSchedule = parseNflM3uTitle(channelName, new Date(startAt * 1000));
   const description = xmlText(asArray(program.desc)[0]);
-  const cleanTitle = sourceSchedule?.title || stripNflPrefix(title) || title;
+  const cleanTitle = sourceSchedule?.title || matchupFromProgramTitle(title) || stripNflPrefix(title) || title;
   if (isEmptySlotTitle(cleanTitle)) return null;
   const displayTitle = displayMatchup(cleanTitle);
   const subtitle = xmlText(asArray(program["sub-title"])[0]) || "NFL Football";
@@ -470,7 +482,7 @@ async function enrichGameProgram(program) {
     const searchEnd = program.startAt + 24 * 60 * 60;
     const { games } = await searchEspnGames({
       league: "nfl",
-      q: program.title,
+      q: "",
       start: searchStart,
       end: searchEnd,
       ttlSeconds: ESPN_ENRICHMENT_CACHE_SECONDS,
@@ -496,7 +508,7 @@ async function enrichGameProgram(program) {
     return { ...program, ...patch };
   } catch (error) {
     enrichmentCache.set(cacheKey, {
-      expiresAt: current + ESPN_ENRICHMENT_CACHE_SECONDS,
+      expiresAt: current + ESPN_ENRICHMENT_FAILURE_CACHE_SECONDS,
       patch: {
         enrichmentError: error.message,
       },
@@ -540,9 +552,13 @@ async function ganjaPrograms() {
           return normalizeGanjaProgram(program, channelName, slot);
         })
         .filter(Boolean)
-        .filter((program) => program.endAt >= current - 12 * 60 * 60 && program.startAt <= current + 14 * 24 * 60 * 60)
+        .filter((program) => program.endAt >= current - 3 * 24 * 60 * 60 && program.startAt <= current + 14 * 24 * 60 * 60)
         .sort((a, b) => a.startAt - b.startAt);
-      sourceCache = { fetchedAt: current, retryAfter: 0, programs, error: "" };
+      if (!programs.length) {
+        sourceCache = { ...sourceCache, retryAfter: current + 300, error: "NFL source returned no usable upcoming programs" };
+      } else {
+        sourceCache = { fetchedAt: current, retryAfter: 0, programs, error: "" };
+      }
     } catch (error) {
       sourceCache = { ...sourceCache, retryAfter: current + 300, error: error.message };
     }
@@ -707,15 +723,20 @@ export async function generatedNflMappings() {
           // A bare local slot can still have an explicit matchup assignment in
           // the source feed. Its XMLTV rows repeat through the day, so infer one
           // kickoff from the source label and let ESPN enrich it when available.
-          const sourceSchedule = parseNflM3uTitle(program.channelName, nowDate);
-          if (!sourceSchedule || !sameMatchup(program.title, sourceSchedule.title)) return [];
-          return { ...program, ...sourceSchedule, slot, source: "ganja" };
+          const sourceSchedule = parseNflM3uTitle(program.channelName, new Date(program.startAt * 1000));
+          if (sourceSchedule && sameMatchup(program.title, sourceSchedule.title)) {
+            return [{ ...program, ...sourceSchedule, slot, source: "ganja" }];
+          }
+          const title = matchupFromProgramTitle(program.title);
+          return title ? [{ ...program, title, slot, source: "ganja-title" }] : [];
         });
     const enrichedGames = await Promise.all(
       mergeGamePrograms(scheduledPrograms)
         .map((program) => enrichGameProgram(program)),
     );
-    const games = enrichedGames;
+    const games = mergeGamePrograms(enrichedGames.filter((program) =>
+      program.source !== "ganja-title" || program.espnEventId,
+    ));
     const programs = slot ? expandedDailyPrograms(games, { slot, channelName: row.name, nowDate }) : [];
     return {
       channel: {

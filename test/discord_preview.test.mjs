@@ -174,6 +174,7 @@ test("HTTP routes require admin sessions for issuance/revocation and preview-sco
 
 test("signed artwork is accessible without keys, bound to share/item/source, and expires", async () => {
   const { db, options } = fixture();
+  const routeDiagnostics = [];
   const upstreamRequests = [];
   const upstream = express();
   upstream.get('/image', (req, res) => {
@@ -192,7 +193,7 @@ test("signed artwork is accessible without keys, bound to share/item/source, and
   const app = express();
   app.use('/api', discordPreviewRouter({ db, requireAuth: (_req, res) => res.sendStatus(401), now: () => current,
     unlocked: (_req, kind, share) => options.unlocked(kind, share), activeProgram: options.activeProgram,
-    activeEvent: options.activeEvent, imageSecret: 'image-signing-secret',
+    activeEvent: options.activeEvent, imageSecret: 'image-signing-secret', artworkLogger: entry => routeDiagnostics.push(entry),
   }));
   const server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
@@ -205,12 +206,16 @@ test("signed artwork is accessible without keys, bound to share/item/source, and
     assert.ok(!artwork.includes(imageBase));
     for (const slug of ['channel', 'programmes', 'static']) {
       const url = (await preview(slug)).programme.icon_url;
-      const image = await fetch(url);
+      const image = await fetch(url, { headers: { 'cf-ray': 'a4a391c22ad19327-ORD' } });
       assert.equal(image.status, 200);
+      assert.match(image.headers.get('x-sharetv-artwork-request'), /^[a-f0-9-]{36}$/);
       assert.equal(image.headers.get('content-type'), 'image/png');
       assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [137, 80, 78, 71]);
     }
     assert.equal(upstreamRequests.length, 3);
+    assert.ok(routeDiagnostics.some(entry => entry.event === 'handler_start' && entry.edgeTrace === 'a4a391c22ad19327-ORD'));
+    assert.ok(!JSON.stringify(routeDiagnostics).includes(issued.secret));
+    assert.ok(!JSON.stringify(routeDiagnostics).includes(new URL(artwork).searchParams.get('signature')));
     for (const headers of upstreamRequests) {
       assert.equal(headers['x-api-key'], undefined);
       assert.equal(headers.cookie, undefined);
@@ -225,7 +230,9 @@ test("signed artwork is accessible without keys, bound to share/item/source, and
     assert.equal((await fetch(artwork)).status, 404);
     assert.equal((await fetch((await preview('channel')).programme.icon_url)).status, 502);
     db.prepare('UPDATE epg_programs SET icon = ? WHERE id = 11').run(`${imageBase}/redirect`);
-    assert.equal((await fetch((await preview('channel')).programme.icon_url)).status, 502);
+    const redirectedImage = await fetch((await preview('channel')).programme.icon_url);
+    assert.equal(redirectedImage.status, 200);
+    await redirectedImage.arrayBuffer();
     db.prepare('UPDATE epg_programs SET icon = ? WHERE id = 11').run(`${imageBase}/image`);
     db.exec("UPDATE share_links SET password_hash = 'locked' WHERE slug = 'channel'");
     assert.equal((await fetch(artwork)).status, 404);
@@ -242,7 +249,7 @@ test("signed artwork is accessible without keys, bound to share/item/source, and
     assert.equal((await fetch(artwork)).status, 404);
     current = 600;
     assert.equal((await fetch(artwork)).status, 404);
-    assert.equal(upstreamRequests.length, 3);
+    assert.equal(upstreamRequests.length, 4);
   } finally {
     await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => imageServer.close(resolve))]);
     db.close();

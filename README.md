@@ -113,12 +113,31 @@ Programme artwork uses the EPG icon or static event icon, never the channel logo
 Unprotected shares return an absolute, narrowly scoped signed image URL valid for five minutes (and only while the share and programme remain current).
 Set `PUBLIC_BASE_URL` to ShareTV's externally reachable origin so the bot can retrieve these images without an API key.
 The image route rechecks share membership/channel scope, expiry, and password protection, and fetches only the stored HTTP(S) artwork.
-It forwards no integration key or cookies, rejects upstream redirects and non-image responses, and times out after 1500ms.
+It forwards no integration key, authorization header, or cookies, and rejects non-image responses.
+Up to three redirects are followed after validating each URL and pinning its resolved address;
+credential-bearing URLs, HTTPS downgrades, loops, and redirects to new private destinations are rejected.
+One 1500ms deadline covers DNS, redirects, response headers, and the complete image body.
 Missing or invalid artwork is null. A password share accessed with an existing valid unlock cookie can expose only a validated public upstream artwork URL.
 
 The bot lives in a separate project. Configure its `SHARETV_BASE` and `SHARETV_API_KEY` there;
 it must restrict requests to that base, forbid redirects, and abandon metadata after 1500ms.
 Missing keys/endpoints, errors, and null programmes must preserve playback. This implementation does not deploy either project or change stream resolution or playback routes.
+
+### Artwork diagnostics
+
+Image responses include an `X-ShareTV-Artwork-Request` correlation ID. Origin logs record that ID,
+the incoming Cloudflare ray (when present), handler entry/status, sanitized upstream hostname/path,
+redirect statuses/targets, image MIME type, elapsed time, byte count, and categorized failures.
+Logs omit API keys, cookies, authorization headers, signatures, all query strings, and opaque path segments.
+Use the correlation ID and edge/origin logs together: an edge 502 alone does not establish whether the handler ran.
+
+Run `node scripts/diagnose-programme-artwork.mjs <share-slug>` in the running ShareTV environment
+with `SHARETV_BASE`, an existing `SHARETV_API_KEY`, and `DATABASE_PATH` supplied securely through its environment.
+The script retrieves fresh authenticated preview metadata, fetches the signed image without a key,
+records sanitized edge/origin correlation headers, and checks actual image decoding with FFmpeg.
+When database access is available it also tests the current stored artwork using the same bounded fetch helper.
+It prints no secrets or raw signed URLs. The script requires the repository's `scripts` directory;
+the production Docker image copies only the application, so mount/copy this script separately when diagnosing a container.
 
 ## Local Dev Without Docker
 

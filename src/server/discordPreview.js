@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { isIP } from "node:net";
 import express from "express";
-import { Readable } from "node:stream";
+import { proxyProgrammeArtwork } from "./programmeArtwork.js";
 
 export const previewScope = "discord:share-preview:read";
 
@@ -122,7 +122,7 @@ export async function sharePreview(db, slug, current, { unlocked, activeProgram,
   return { status: 200, body: { preview: { channel_name: row?.channel_name || share.channel_name, programme: programme(row, current, imageUrl && ((row) => share.password_hash ? publicImageUrl(row.icon) : imageUrl("temporary", row))) } } };
 }
 
-export function discordPreviewRouter({ db, requireAuth, now, unlocked, activeProgram, activeEvent, imageSecret, publicBaseUrl = "" }) {
+export function discordPreviewRouter({ db, requireAuth, now, unlocked, activeProgram, activeEvent, imageSecret, publicBaseUrl = "", artworkLogger = (entry) => console.info(JSON.stringify(entry)) }) {
   const router = express.Router();
   router.use(["/admin/integration-keys", "/integrations/discord"], (_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
   router.get("/admin/integration-keys", requireAuth, (_req, res) => res.json({ keys: listIntegrationKeys(db) }));
@@ -158,6 +158,15 @@ export function discordPreviewRouter({ db, requireAuth, now, unlocked, activePro
   });
   router.get("/public/discord-programme-image/:slug/:kind/:id", async (req, res) => {
     res.set("Cache-Control", "no-store");
+    const requestId = crypto.randomUUID();
+    res.set("X-ShareTV-Artwork-Request", requestId);
+    const ray = req.get("cf-ray");
+    const edgeTrace = typeof ray === "string" && /^[a-f0-9]{16}-[A-Z]{3}$/.test(ray) ? ray : null;
+    const diagnostic = (entry) => artworkLogger({ component: "discord-programme-image", requestId, edgeTrace, ...entry });
+    const handlerStarted = Date.now();
+    res.once("finish", () => diagnostic({ event: "handler_response", status: res.statusCode, elapsedMs: Date.now() - handlerStarted }));
+    diagnostic({ event: "handler_start", kind: ["static", "temporary"].includes(req.params.kind) ? req.params.kind : null,
+      programmeId: /^\d+$/.test(req.params.id) ? Number(req.params.id) : null });
     const current = now();
     const expires = Number(req.query.expires);
     const signature = typeof req.query.signature === "string" && /^[a-f0-9]{64}$/.test(req.query.signature)
@@ -180,22 +189,8 @@ export function discordPreviewRouter({ db, requireAuth, now, unlocked, activePro
         .get(req.params.slug, req.params.id, current, current, current, current);
     }
     if (!row || !imageSource(row.icon) || !crypto.timingSafeEqual(signature, imageSignature(imageSecret, req.params.slug, req.params.kind, row, expires))) return res.status(404).end();
-    try {
-      // Fetch only stored artwork after checking its signed share/item scope. No API key or cookies are forwarded.
-      const response = await fetch(imageSource(row.icon), { redirect: "error", signal: AbortSignal.timeout(1500) });
-      const contentType = response.headers.get("content-type") || "";
-      if (!response.ok || !/^image\//i.test(contentType) || !response.body) {
-        await response.body?.cancel();
-        return res.status(502).end();
-      }
-      res.set("Content-Type", contentType);
-      res.set("X-Content-Type-Options", "nosniff");
-      res.set("Content-Security-Policy", "default-src 'none'; sandbox");
-      const body = Readable.fromWeb(response.body);
-      body.on("error", () => res.destroy());
-      res.on("close", () => body.destroy());
-      body.pipe(res);
-    } catch { if (!res.headersSent) res.status(502).end(); else res.destroy(); }
+    // Only signed, stored artwork reaches the bounded redirect/streaming helper.
+    await proxyProgrammeArtwork(res, imageSource(row.icon), { diagnostic });
   });
   return router;
 }

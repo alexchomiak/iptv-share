@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../../lib/api.js";
 import { navigate } from "../../lib/navigation.js";
 import { formatDateTime } from "../../lib/time.js";
+import IntegrationKeys from "./IntegrationKeys.jsx";
 
 const emptyStaticForm = { slug: "", title: "", description: "", icon: "", backgroundImage: "", discordWebhookUrl: "", password: "", maxViewers: "", spoilerDelaySeconds: "" };
 
@@ -79,6 +80,7 @@ function AdminPage() {
       </header>
 
       <section className="adminGrid">
+        <IntegrationKeys />
         <form className="adminCard staticShareCreator" onSubmit={createStaticShare}>
           <div>
             <h2>New Static Share</h2>

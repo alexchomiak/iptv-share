@@ -93,6 +93,33 @@ For a currently streamable channel whose source is a platform page on `PLATFORM_
 
 The public share API returns `stream_url` and `hls_url` as absolute URLs with a signed viewer credential. They can be passed directly to players such as `ffplay`. Set `PUBLIC_BASE_URL` to the externally reachable HTTPS origin in production; when it is empty, the API uses the request origin.
 
+## Discord programme previews
+
+In **Share Admin → Discord API Keys**, give a key a name and select **Generate API Key**.
+Copy the secret immediately: it is shown only once and only its SHA-256 hash and metadata are stored.
+The panel lists key names, creation times, scope, and revocation status; **Revoke** disables a key immediately.
+Key creation, listing, and revocation require the existing admin login. Keys do not grant admin or playback access.
+
+The bot calls `GET /api/integrations/discord/share/:slug/preview` with the key in `X-API-Key`.
+The response is exactly `{ "preview": { "channel_name": "…", "programme": null } }` when there is no currently airing programme.
+Otherwise `programme` contains only `id`, `title`, `start_at`, `end_at` (Unix seconds), and `icon_url` (or `null`).
+Channel shares find current EPG by channel ID using `start_at <= now < end_at`, latest start first, then highest ID.
+Programme and static shares use their selected active item and its actual channel, with static event times normalized to `start_at`/`end_at`.
+Static share pages are permanent; an empty schedule returns a null programme rather than expiring the page.
+Absent, invalid, revoked, or incorrectly scoped keys return 401; unknown or expired temporary shares return 404; password-locked shares return 403.
+Keys cannot unlock shares.
+
+Programme artwork uses the EPG icon or static event icon, never the channel logo.
+Unprotected shares return an absolute, narrowly scoped signed image URL valid for five minutes (and only while the share and programme remain current).
+Set `PUBLIC_BASE_URL` to ShareTV's externally reachable origin so the bot can retrieve these images without an API key.
+The image route rechecks share membership/channel scope, expiry, and password protection, and fetches only the stored HTTP(S) artwork.
+It forwards no integration key or cookies, rejects upstream redirects and non-image responses, and times out after 1500ms.
+Missing or invalid artwork is null. A password share accessed with an existing valid unlock cookie can expose only a validated public upstream artwork URL.
+
+The bot lives in a separate project. Configure its `SHARETV_BASE` and `SHARETV_API_KEY` there;
+it must restrict requests to that base, forbid redirects, and abandon metadata after 1500ms.
+Missing keys/endpoints, errors, and null programmes must preserve playback. This implementation does not deploy either project or change stream resolution or playback routes.
+
 ## Local Dev Without Docker
 
 Install dependencies:

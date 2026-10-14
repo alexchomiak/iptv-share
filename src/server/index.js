@@ -15,6 +15,7 @@ import { addPlatformMediaSource } from "./platformSources.js";
 import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
 import { findActiveShareProgram as selectActiveShareProgram } from "./sharePrograms.js";
 import { staticHlsSegmentIsStreamable } from "./staticHlsAccess.js";
+import { discordPreviewRouter } from "./discordPreview.js";
 import { shouldEndOpenSportsStream, streamCutoffWindow } from "./sportsStreamCutoff.js";
 import { hashPassword, randomToken, safeCompare, signedShareCookie, signStreamTarget, verifyPassword } from "./crypto.js";
 import {
@@ -2807,6 +2808,14 @@ function loadShareById(id) {
     )
     .get(id);
 }
+
+app.use("/api", discordPreviewRouter({
+  db, requireAuth, now,
+  imageSecret: config.sessionSecret, publicBaseUrl: config.publicBaseUrl,
+  unlocked: (req, kind, share) => kind === "static" ? staticShareIsUnlocked(req, share) : shareIsUnlocked(req, share),
+  activeProgram: (share) => findActiveShareProgram(share.id),
+  activeEvent: (id) => findActiveStaticEvent(id, { allowNetwork: false }),
+}));
 
 app.get("/api/public/share/:slug", async (req, res) => {
   cleanupExpiredShares();

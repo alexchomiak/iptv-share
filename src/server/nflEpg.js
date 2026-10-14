@@ -75,9 +75,10 @@ const NFL_TEAMS = [
   ["Tampa Bay Buccaneers", "tb", "buccaneers", "bucs"],
   ["Tennessee Titans", "ten", "titans"],
   ["Washington Commanders", "was", "commanders"],
-].map(([display, ...aliases]) => ({
+].map(([display, abbreviation, nickname, ...aliases]) => ({
   display,
-  aliases: [display, ...aliases].map(normalizeTeamToken),
+  shortName: nickname.charAt(0).toUpperCase() + nickname.slice(1),
+  aliases: [display, abbreviation, nickname, ...aliases].map(normalizeTeamToken),
 }));
 
 function escapeXml(value = "") {
@@ -274,6 +275,16 @@ function displayMatchup(title = "") {
   const matchup = splitMatchup(title);
   if (!matchup) return String(title || "").trim();
   return `${fullTeamName(matchup.away)} at ${fullTeamName(matchup.home)}`;
+}
+
+function shortProgrammeTitle(title = "") {
+  const prefix = String(title).match(/^(Pregame: |Postgame: )/i)?.[0] || "";
+  const matchup = splitMatchup(String(title).slice(prefix.length));
+  if (!matchup) return title;
+  const teamName = (value) => NFL_TEAMS.find((team) => team.aliases.includes(normalizeTeamToken(value)))?.shortName;
+  const away = teamName(matchup.away);
+  const home = teamName(matchup.home);
+  return away && home ? `${prefix}${away} at ${home}` : title;
 }
 
 function matchupFromProgramTitle(title = "") {
@@ -592,7 +603,7 @@ function fallbackProgramForChannel(row, nowDate) {
 
 function makeGuideProgram({ title, subtitle = "NFL Football", description, startAt, endAt, slot, source, channelName, icon = "" }) {
   return {
-    title,
+    title: shortProgrammeTitle(title),
     subtitle,
     description,
     category: "Sports",

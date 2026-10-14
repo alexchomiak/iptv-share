@@ -39,17 +39,23 @@ function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", 
 test("bare local slot uses verified source matchup with ESPN kickoff, deduplicating repeated XMLTV rows", async () => {
   const { context, searches } = fixture();
   const [mapping] = await context.generatedNflMappings();
-  const games = mapping.programs.filter(p => p.title === "Chicago Bears at Carolina Panthers");
+  const games = mapping.programs.filter(p => p.title === "Bears at Panthers");
   assert.equal(games.length, 1);
   assert.equal(games[0].startAt, kickoff);
   assert.equal(searches(), 1);
   assert.equal(mapping.programs.find(p => p.source === "generated-pregame").startAt, kickoff - 3600);
+  assert.equal(mapping.programs.find(p => p.source === "generated-pregame").title, "Pregame: Bears at Panthers");
+  assert.equal(mapping.programs.find(p => p.source === "generated-postgame").title, "Postgame: Bears at Panthers");
+  const xml = await context.generatedNflXmltv();
+  assert.match(xml, /<title>Bears at Panthers<\/title>/);
+  assert.match(xml, /<title>Pregame: Bears at Panthers<\/title>/);
+  assert.match(xml, /<title>Postgame: Bears at Panthers<\/title>/);
 });
 
 test("source assignment still publishes when optional ESPN enrichment is unavailable", async () => {
   const { context } = fixture({ available: false });
   const [mapping] = await context.generatedNflMappings();
-  const game = mapping.programs.find(p => p.title === "Chicago Bears at Carolina Panthers");
+  const game = mapping.programs.find(p => p.title === "Bears at Panthers");
   assert.ok(game);
   assert.equal(game.espnEventId, undefined);
 });
@@ -57,7 +63,7 @@ test("source assignment still publishes when optional ESPN enrichment is unavail
 test("bare source slot can use matchup in XMLTV program title and verified ESPN kickoff", async () => {
   const { context } = fixture({ sourceLabel: "NFL | 08" });
   const [mapping] = await context.generatedNflMappings();
-  const games = mapping.programs.filter(p => p.title === "Chicago Bears at Carolina Panthers");
+  const games = mapping.programs.filter(p => p.title === "Bears at Panthers");
   assert.equal(games.length, 1);
   assert.equal(games[0].startAt, kickoff);
 });
@@ -65,13 +71,13 @@ test("bare source slot can use matchup in XMLTV program title and verified ESPN 
 test("title-only source does not invent a kickoff when ESPN is unavailable", async () => {
   const { context } = fixture({ sourceLabel: "NFL | 08", available: false });
   const [mapping] = await context.generatedNflMappings();
-  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+  assert.equal(mapping.programs.some(p => p.title === "Bears at Panthers"), false);
 });
 
 test("Dispatcharr stream title restores a bare slot when source EPG has no assignment", async () => {
   const { context } = fixture({ sourceLabel: "NFL | 08", programmeTitle: "No Event", streamTitles: ["NFL 08 - Bears @ Panthers HD"] });
   const [mapping] = await context.generatedNflMappings();
-  const game = mapping.programs.find(p => p.title === "Chicago Bears at Carolina Panthers");
+  const game = mapping.programs.find(p => p.title === "Bears at Panthers");
   assert.equal(game?.startAt, kickoff);
   assert.equal(game?.source, "dispatcharr-stream");
 });
@@ -79,7 +85,7 @@ test("Dispatcharr stream title restores a bare slot when source EPG has no assig
 test("Dispatcharr title without a matching ESPN event does not invent a game", async () => {
   const { context } = fixture({ sourceLabel: "NFL | 08", programmeTitle: "No Event", streamTitles: ["NFL 08 - Bears @ Panthers HD"], available: false });
   const [mapping] = await context.generatedNflMappings();
-  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+  assert.equal(mapping.programs.some(p => p.title === "Bears at Panthers"), false);
 });
 
 test("ESPN matchup requires the correct away and home teams", () => {
@@ -103,13 +109,13 @@ test("missing slot mappings are reported as unavailable, not No Game Today", asy
 test("Sunday game remains mapped after early source XMLTV rows age past twelve hours", async () => {
   const { context } = fixture({ nowMs: Date.parse("2026-09-14T03:00:00Z") });
   const [mapping] = await context.generatedNflMappings();
-  assert.ok(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"));
+  assert.ok(mapping.programs.some(p => p.title === "Bears at Panthers"));
 });
 
 test("old Sunday source rows do not roll into the following Sunday", async () => {
   const { context } = fixture({ nowMs: Date.parse("2026-09-14T05:00:00Z") });
   const [mapping] = await context.generatedNflMappings();
-  assert.equal(mapping.programs.some(p => p.title === "Chicago Bears at Carolina Panthers"), false);
+  assert.equal(mapping.programs.some(p => p.title === "Bears at Panthers"), false);
 });
 
 test("stale source matchup stays on the ESPN date instead of moving to this Sunday", async () => {
@@ -121,6 +127,58 @@ test("stale source matchup stays on the ESPN date instead of moving to this Sund
 test("a named local matchup still takes precedence over a conflicting source slot", async () => {
   const { context } = fixture({ localTitle: "NFL | 08 - 1pm Jets at Titans" });
   const [mapping] = await context.generatedNflMappings();
-  assert.equal(mapping.programs.some(p => p.title === "New York Jets at Tennessee Titans"), true);
+  assert.equal(mapping.programs.some(p => p.title === "Jets at Titans"), true);
   assert.equal(mapping.programs.some(p => p.title.includes("Bears")), false);
+});
+
+test("short titles handle every NFL team, abbreviations, and pregame/postgame prefixes", () => {
+  const { context } = fixture();
+  const teams = [
+    ['Arizona Cardinals', 'ARI', 'Cardinals'],
+    ['Atlanta Falcons', 'ATL', 'Falcons'],
+    ['Baltimore Ravens', 'BAL', 'Ravens'],
+    ['Buffalo Bills', 'BUF', 'Bills'],
+    ['Carolina Panthers', 'CAR', 'Panthers'],
+    ['Chicago Bears', 'CHI', 'Bears'],
+    ['Cincinnati Bengals', 'CIN', 'Bengals'],
+    ['Cleveland Browns', 'CLE', 'Browns'],
+    ['Dallas Cowboys', 'DAL', 'Cowboys'],
+    ['Denver Broncos', 'DEN', 'Broncos'],
+    ['Detroit Lions', 'DET', 'Lions'],
+    ['Green Bay Packers', 'GB', 'Packers'],
+    ['Houston Texans', 'HOU', 'Texans'],
+    ['Indianapolis Colts', 'IND', 'Colts'],
+    ['Jacksonville Jaguars', 'JAX', 'Jaguars'],
+    ['Kansas City Chiefs', 'KC', 'Chiefs'],
+    ['Las Vegas Raiders', 'LV', 'Raiders'],
+    ['Los Angeles Chargers', 'LAC', 'Chargers'],
+    ['Los Angeles Rams', 'LAR', 'Rams'],
+    ['Miami Dolphins', 'MIA', 'Dolphins'],
+    ['Minnesota Vikings', 'MIN', 'Vikings'],
+    ['New England Patriots', 'NE', 'Patriots'],
+    ['New Orleans Saints', 'NO', 'Saints'],
+    ['New York Giants', 'NYG', 'Giants'],
+    ['New York Jets', 'NYJ', 'Jets'],
+    ['Philadelphia Eagles', 'PHI', 'Eagles'],
+    ['Pittsburgh Steelers', 'PIT', 'Steelers'],
+    ['San Francisco 49ers', 'SF', '49ers'],
+    ['Seattle Seahawks', 'SEA', 'Seahawks'],
+    ['Tampa Bay Buccaneers', 'TB', 'Buccaneers'],
+    ['Tennessee Titans', 'TEN', 'Titans'],
+    ['Washington Commanders', 'WAS', 'Commanders'],
+  ];
+  for (const [away, awayAbbreviation, awayNickname] of teams) {
+    for (const [home, homeAbbreviation, homeNickname] of teams) {
+      const expected = `${awayNickname} at ${homeNickname}`;
+      for (const prefix of ['', 'Pregame: ', 'Postgame: ']) {
+        assert.equal(context.shortProgrammeTitle(`${prefix}${away} at ${home}`), `${prefix}${expected}`);
+        assert.equal(context.shortProgrammeTitle(`${prefix}${awayAbbreviation} @ ${homeAbbreviation}`), `${prefix}${expected}`);
+        assert.equal(context.shortProgrammeTitle(`${prefix}${awayNickname} vs. ${homeNickname}`), `${prefix}${expected}`);
+      }
+    }
+  }
+  assert.equal(context.shortProgrammeTitle('Bucs at 49ers'), 'Buccaneers at 49ers');
+  for (const title of ['No Event', 'No Game Today', 'Schedule Unavailable', 'Unknown Team at Chicago Bears']) {
+    assert.equal(context.shortProgrammeTitle(title), title);
+  }
 });

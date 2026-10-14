@@ -3,6 +3,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { config } from "./config.js";
 import { hashPassword } from "./crypto.js";
+import { initIntegrationKeys } from "./discordPreview.js";
 
 fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
 
@@ -11,6 +12,7 @@ db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
 export function initDb() {
+  initIntegrationKeys(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY,

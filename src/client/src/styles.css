@@ -311,6 +311,20 @@ h2 {
   font-size: 18px;
 }
 
+.integrationKeys {
+  grid-column: 1 / -1;
+}
+
+.integrationKeyForm, .integrationKeySecret {
+  display: grid;
+  gap: 10px;
+}
+
+.integrationKeySecret code {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 .adminShareList {
   gap: 10px;
 }

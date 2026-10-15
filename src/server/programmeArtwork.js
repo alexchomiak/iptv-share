@@ -53,6 +53,14 @@ function sourceUrl(value) {
   return url;
 }
 
+export function artworkRedirectTarget(location, current) {
+  let next;
+  const from = new URL(current);
+  try { next = sourceUrl(new URL(location, from)); } catch { throw new ArtworkError('invalid_redirect'); }
+  if (from.protocol === 'https:' && next.protocol !== 'https:') throw new ArtworkError('unsafe_redirect');
+  return next;
+}
+
 function abortable(promise, signal) {
   return new Promise((resolve, reject) => {
     const abort = () => reject(signal.reason);
@@ -123,9 +131,7 @@ export async function proxyProgrammeArtwork(res, source, { diagnostic = () => {}
         upstream.destroy();
         if (hop >= 3) throw new ArtworkError('redirect_limit');
         if (!location) throw new ArtworkError('invalid_redirect');
-        let next;
-        try { next = sourceUrl(new URL(location, url)); } catch { throw new ArtworkError('invalid_redirect'); }
-        if (url.protocol === 'https:' && next.protocol !== 'https:') throw new ArtworkError('unsafe_redirect');
+        const next = artworkRedirectTarget(location, url);
         report('redirect', { hop, status, target: sanitizedArtworkSource(next) });
         url = next;
         continue;

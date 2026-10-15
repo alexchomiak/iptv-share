@@ -41,7 +41,7 @@ const PREGAME_SECONDS = 60 * 60;
 const POSTGAME_SECONDS = 60 * 60;
 const ESPN_ENRICHMENT_CACHE_SECONDS = 24 * 60 * 60;
 const ESPN_ENRICHMENT_FAILURE_CACHE_SECONDS = 5 * 60;
-const ESPN_ENRICHMENT_CACHE_VERSION = 2;
+const ESPN_ENRICHMENT_CACHE_VERSION = 3;
 const NFL_TEAMS = [
   ["Arizona Cardinals", "ari", "cardinals"],
   ["Atlanta Falcons", "atl", "falcons"],
@@ -171,7 +171,7 @@ function inferKickoffEpoch({ dayToken, timeToken, nowDate = new Date(), timeZone
   const nowParts = timezoneParts(nowDate, timeZone);
   const today = nowParts.weekday ?? new Date(zonedDateTimeToEpoch({ ...nowParts, hour: 12, minute: 0 }, timeZone) * 1000).getUTCDay();
   const explicitDay = dayToken ? DAY_ALIASES[String(dayToken).toLowerCase()] : null;
-  const preferredDay = explicitDay ?? (kickoff.hour >= 12 && kickoff.hour < 19 ? 0 : today);
+  const preferredDay = explicitDay ?? (kickoff.hour < 19 ? 0 : today);
   const daysAhead = (preferredDay - today + 7) % 7;
   const candidateDate = addDaysToZonedDate(nowParts, daysAhead);
   let epoch = zonedDateTimeToEpoch({ ...candidateDate, hour: kickoff.hour, minute: kickoff.minute }, timeZone);
@@ -434,6 +434,9 @@ export function parseNflM3uTitle(sourceTitle = "", nowDate = new Date()) {
     category: "Sports",
     startAt,
     endAt: startAt + config.nflMapperDurationSeconds,
+    // A time-only label is a weekly assignment, not a dated XMLTV event.
+    scheduleDayInferred: !match[1],
+    scheduleSearchAt: Math.floor(nowDate.getTime() / 1000),
   };
 }
 
@@ -502,8 +505,9 @@ async function enrichGameProgram(program) {
   if (cached && cached.expiresAt > current) return { ...program, ...cached.patch };
 
   try {
-    const searchStart = program.startAt - 24 * 60 * 60;
-    const searchEnd = program.startAt + (program.source === "dispatcharr-stream" ? 7 : 1) * 24 * 60 * 60;
+    const searchAnchor = program.scheduleDayInferred ? program.scheduleSearchAt : program.startAt;
+    const searchStart = searchAnchor - 24 * 60 * 60;
+    const searchEnd = searchAnchor + (program.scheduleDayInferred || program.source === "dispatcharr-stream" ? 7 : 1) * 24 * 60 * 60;
     const { games } = await searchEspnGames({
       league: "nfl",
       q: "",
@@ -634,6 +638,8 @@ function alignSourceProgramsToLocalSchedule(sourcePrograms, fallback) {
       title: fallback.title,
       startAt: fallback.startAt,
       endAt: fallback.endAt,
+      scheduleDayInferred: fallback.scheduleDayInferred,
+      scheduleSearchAt: fallback.scheduleSearchAt,
       description: program.description && program.description !== program.title ? program.description : fallback.description,
       scheduleSource: "m3u-title",
     };
@@ -760,7 +766,7 @@ export async function generatedNflMappings() {
           // A bare local slot can still have an explicit matchup assignment in
           // the source feed. Its XMLTV rows repeat through the day, so infer one
           // kickoff from the source label and let ESPN enrich it when available.
-          const sourceSchedule = parseNflM3uTitle(program.channelName, new Date(program.startAt * 1000));
+          const sourceSchedule = parseNflM3uTitle(program.channelName, nowDate);
           if (sourceSchedule && sameMatchup(program.title, sourceSchedule.title)) {
             return [{ ...program, ...sourceSchedule, slot, source: "ganja" }];
           }

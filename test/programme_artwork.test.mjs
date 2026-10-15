@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { inflateSync } from 'node:zlib';
-import { proxyProgrammeArtwork, sanitizedArtworkSource, artworkErrorCategory } from '../src/server/programmeArtwork.js';
+import { proxyProgrammeArtwork, sanitizedArtworkSource, artworkErrorCategory, artworkRedirectTarget } from '../src/server/programmeArtwork.js';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
@@ -16,7 +16,7 @@ async function servers(t, { timeoutMs = 1500, lookup } = {}) {
     requests.push({ path: req.url.split('?')[0], headers: req.headers });
     const path = req.url.split('?')[0];
     if (path === '/image' || path === '/images/version/image') return res.writeHead(200, { 'Content-Type': 'image/png' }).end(png);
-    if (path === '/images/image') return res.writeHead(302, { Location: '/images/version/image' }).end();
+    if (path === '/images/image') return res.writeHead(302, { Location: '/images/version/image', 'Set-Cookie': 'upstream-secret=private' }).end();
     if (path === '/loop') return res.writeHead(302, { Location: '/loop' }).end();
     if (path.startsWith('/chain/')) return res.writeHead(302, { Location: `/chain/${Number(path.split('/').at(-1)) + 1}` }).end();
     if (path === '/credentials') return res.writeHead(302, { Location: 'http://user:secret@evil.example/image' }).end();
@@ -173,4 +173,20 @@ test('diagnostics omit query strings, credentials, opaque path segments and raw 
   assert.deepEqual(sanitizedArtworkSource('https://images.example/token/secret/image'), { hostname: 'images.example', path: '/token/[redacted]/image' });
   assert.equal(artworkErrorCategory({ code: 'ENOTFOUND', message: 'secret' }), 'dns');
   assert.equal(artworkErrorCategory({ code: 'CERT_HAS_EXPIRED', message: 'secret' }), 'tls');
+});
+
+test('HTTPS redirects allow valid targets and reject downgrades and URL credentials', () => {
+  assert.equal(artworkRedirectTarget('/image', 'https://images.example/start').href, 'https://images.example/image');
+  assert.equal(artworkRedirectTarget('https://cdn.example/image', 'https://images.example/start').href, 'https://cdn.example/image');
+  assert.throws(() => artworkRedirectTarget('http://images.example/image', 'https://images.example/start'), { message: 'unsafe_redirect' });
+  assert.throws(() => artworkRedirectTarget('https://user:secret@images.example/image', 'https://images.example/start'), { message: 'invalid_redirect' });
+});
+
+test('a stalled DNS lookup respects the same total timeout without opening a socket', async t => {
+  const { base, setSource, diagnostics, requests } = await servers(t, { timeoutMs: 50, lookup: () => new Promise(() => {}) });
+  setSource('http://slow.example/image');
+  const response = await fetch(base);
+  assert.equal(response.status, 502);
+  assert.equal(diagnostics.at(-1).category, 'timeout');
+  assert.equal(requests.length, 0);
 });

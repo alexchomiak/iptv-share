@@ -11,29 +11,37 @@ const source = fs.readFileSync(new URL("../src/server/nflEpg.js", import.meta.ur
   .replace(/^export /gm, "");
 const sunday = Date.parse("2026-09-13T14:00:00Z");
 const kickoff = Date.parse("2026-09-13T17:00:00Z") / 1000;
-function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true, sourceLabel = "NFL | 08 - 1pm Bears at Panthers", programmeTitle = "Coming Up: Chicago Bears @ Carolina Panthers", streamTitles = [], nowMs = sunday } = {}) {
+function fixture({ localTitle = "NFL | 08", eventDate = "2026-09-13T17:00:00Z", available = true, sourceLabel = "NFL | 08 - 1pm Bears at Panthers", programmeTitle = "Coming Up: Chicago Bears @ Carolina Panthers", streamTitles = [], nowMs = sunday,
+  programmeStarts = ['20260913040000', '20260913060000', '20260913080000'],
+  espnGame = { name: "Chicago Bears at Carolina Panthers", away: { name: "Chicago Bears", abbreviation: "CHI" }, home: { name: "Carolina Panthers", abbreviation: "CAR" } },
+  respectSearchWindow = false,
+} = {}) {
   class FixedDate extends Date {
     constructor(...args) { super(...(args.length ? args : [nowMs])); }
     static now() { return nowMs; }
   }
   let searches = 0;
+  const searchWindows = [];
   const label = sourceLabel;
-  const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${["040000", "060000", "080000"].map(time => `<programme channel="slot08" start="20260913${time} +0000"><title>${programmeTitle}</title></programme>`).join("")}</tv>`;
+  const xml = `<tv><channel id="slot08"><display-name>Chicago Bears @ Carolina Panthers</display-name><display-name>${label}</display-name></channel>${programmeStarts.map(start => `<programme channel="slot08" start="${start} +0000"><title>${programmeTitle}</title></programme>`).join("")}</tv>`;
   const context = vm.createContext({
     Date: FixedDate, Intl, Buffer, AbortSignal, XMLParser, gunzipSync,
     config: { nflMapperTimezone: "America/New_York", nflMapperDurationSeconds: 21600, nflMapperSourceUrl: "https://fixture.test/guide.xml", nflMapperSourceCacheSeconds: 86400 },
     db: { prepare: () => ({ all: () => [{ id: 1, tvg_id: "slot08", name: localTitle, source_title: localTitle }] }) },
     fetch: async () => ({ ok: true, arrayBuffer: async () => Buffer.from(xml) }),
-    searchEspnGames: async () => {
+    searchEspnGames: async ({ start, end }) => {
       searches += 1;
+      searchWindows.push({ start, end });
       if (!available) throw new Error("ESPN unavailable");
-      return { games: [{ id: "verified-game", name: "Chicago Bears at Carolina Panthers", date: eventDate, away: { name: "Chicago Bears", abbreviation: "CHI" }, home: { name: "Carolina Panthers", abbreviation: "CAR" } }] };
+      const game = { id: "verified-game", ...espnGame, date: eventDate };
+      const time = Date.parse(eventDate) / 1000;
+      return { games: respectSearchWindow && !(start <= time && time <= end) ? [] : [game] };
     },
     getEspnGameSummary: async () => ({ summary: {}, cache: "hit" }),
     cachedDispatcharrStreamNames: async () => new Map([["slot08", streamTitles]]),
   });
   vm.runInContext(source, context);
-  return { context, searches: () => searches };
+  return { context, searches: () => searches, searchWindows };
 }
 
 test("bare local slot uses verified source matchup with ESPN kickoff, deduplicating repeated XMLTV rows", async () => {
@@ -181,4 +189,68 @@ test("short titles handle every NFL team, abbreviations, and pregame/postgame pr
   for (const title of ['No Event', 'No Game Today', 'Schedule Unavailable', 'Unknown Team at Chicago Bears']) {
     assert.equal(context.shortProgrammeTitle(title), title);
   }
+});
+
+const texansJaguars = {
+  name: 'Houston Texans at Jacksonville Jaguars',
+  away: { name: 'Houston Texans', abbreviation: 'HOU' },
+  home: { name: 'Jacksonville Jaguars', abbreviation: 'JAX' },
+};
+const londonFixture = {
+  nowMs: Date.parse('2026-10-15T12:00:00Z'),
+  sourceLabel: 'NFL | 08 - 9:30am Texans at Jaguars',
+  programmeTitle: 'NFL | 08 - 9:30am Texans at Jaguars',
+  programmeStarts: ['20261015000000', '20261015020000', '20261016000000', '20261021000000', '20261022000000'],
+  espnGame: texansJaguars,
+  eventDate: '2026-10-18T13:30:00Z',
+  respectSearchWindow: true,
+};
+
+test('Thursday London-game labels resolve once to Sunday rather than each repeated XMLTV day', async () => {
+  const { context, searches, searchWindows } = fixture(londonFixture);
+  const [mapping] = await context.generatedNflMappings();
+  const games = mapping.programs.filter(p => p.title === 'Texans at Jaguars');
+  assert.equal(games.length, 1);
+  const actualKickoff = Date.parse(londonFixture.eventDate) / 1000;
+  assert.equal(games[0].startAt, actualKickoff);
+  assert.equal(searches(), 1);
+  assert.ok(searchWindows[0].start <= actualKickoff && actualKickoff <= searchWindows[0].end);
+  assert.equal(mapping.programs.find(p => p.title === 'Pregame: Texans at Jaguars').startAt, actualKickoff - 3600);
+  assert.equal(mapping.programs.find(p => p.title === 'Postgame: Texans at Jaguars').startAt, actualKickoff + 21600);
+  const xml = await context.generatedNflXmltv();
+  const programmes = new XMLParser({ ignoreAttributes: false }).parse(xml).tv.programme;
+  assert.equal(programmes.filter(p => p.title === 'Texans at Jaguars').length, 1);
+  assert.equal(programmes.find(p => p.title === 'Texans at Jaguars')['@_start'], '20261018133000 +0000');
+});
+
+test('morning time-only label falls back to one Sunday assignment if ESPN is unavailable', async () => {
+  const { context } = fixture({ ...londonFixture, available: false });
+  const [mapping] = await context.generatedNflMappings();
+  const games = mapping.programs.filter(p => p.title === 'Texans at Jaguars');
+  assert.equal(games.length, 1);
+  assert.equal(games[0].startAt, Date.parse(londonFixture.eventDate) / 1000);
+});
+
+test('local M3U time-only labels also search the coming week instead of a one-day window', async () => {
+  const { context, searchWindows } = fixture({ ...londonFixture, localTitle: 'NFL | 08 - 9:30am Texans at Jaguars' });
+  const [mapping] = await context.generatedNflMappings();
+  assert.equal(mapping.programs.filter(p => p.title === 'Texans at Jaguars').length, 1);
+  const kickoff = Date.parse(londonFixture.eventDate) / 1000;
+  assert.ok(searchWindows.every(window => window.start <= kickoff && kickoff <= window.end));
+});
+
+test('an explicit weekday stays authoritative when optional enrichment is unavailable', async () => {
+  const { context } = fixture({ ...londonFixture, sourceLabel: 'NFL | 08 - Thu 9:30am Texans at Jaguars', available: false });
+  const [mapping] = await context.generatedNflMappings();
+  const games = mapping.programs.filter(p => p.title === 'Texans at Jaguars');
+  assert.equal(games.length, 1);
+  assert.equal(games[0].startAt, Date.parse('2026-10-15T13:30:00Z') / 1000);
+});
+
+test('ESPN can correct an inferred daytime label to a Thursday game', async () => {
+  const { context } = fixture({ ...londonFixture, sourceLabel: 'NFL | 08 - 12:30pm Texans at Jaguars', eventDate: '2026-10-15T16:30:00Z' });
+  const [mapping] = await context.generatedNflMappings();
+  const games = mapping.programs.filter(p => p.title === 'Texans at Jaguars');
+  assert.equal(games.length, 1);
+  assert.equal(games[0].startAt, Date.parse('2026-10-15T16:30:00Z') / 1000);
 });

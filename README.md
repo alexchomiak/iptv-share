@@ -102,7 +102,8 @@ Key creation, listing, and revocation require the existing admin login. Keys do 
 
 The bot calls `GET /api/integrations/discord/share/:slug/preview` with the key in `X-API-Key`.
 The response is exactly `{ "preview": { "channel_name": "…", "programme": null } }` when there is no currently airing programme.
-Otherwise `programme` contains only `id`, `title`, `start_at`, `end_at` (Unix seconds), and `icon_url` (or `null`).
+Otherwise `programme` contains `id`, `title`, `start_at`, `end_at` (Unix seconds), `icon_url` (or `null`), and `description` (a string or `null`).
+Descriptions are returned in full from the active EPG programme or scheduled event; the bot handles truncation.
 Channel shares find current EPG by channel ID using `start_at <= now < end_at`, latest start first, then highest ID.
 Programme and static shares use their selected active item and its actual channel, with static event times normalized to `start_at`/`end_at`.
 Static share pages are permanent; an empty schedule returns a null programme rather than expiring the page.

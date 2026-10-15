@@ -20,6 +20,8 @@ function fixture() {
     INSERT INTO share_link_items VALUES (2, 12);
     INSERT INTO static_shares VALUES (4, 'static', NULL), (5, 'static-locked', 'hash');
     INSERT INTO static_share_events VALUES (20, 4, 2, 'Static event', 200, 300, 'https://images.example/event.jpg');
+    ALTER TABLE epg_programs ADD COLUMN description TEXT;
+    ALTER TABLE static_share_events ADD COLUMN description TEXT;
   `);
   const options = {
     unlocked: (_kind, share) => !share.password_hash,
@@ -56,7 +58,7 @@ test("channel-only shares discover EPG without items and respect boundaries and 
   const { db, preview } = fixture();
   try {
     assert.deepEqual((await preview('channel', 200)).body, { preview: {
-      channel_name: 'First', programme: { id: 11, title: 'Current', start_at: 200, end_at: 300, icon_url: 'https://images.example/current.jpg' },
+      channel_name: 'First', programme: { id: 11, title: 'Current', start_at: 200, end_at: 300, icon_url: 'https://images.example/current.jpg', description: null },
     } });
     assert.equal((await preview('channel', 199)).body.preview.programme.id, 10);
     assert.equal((await preview('channel', 300)).body.preview.programme, null);
@@ -69,7 +71,7 @@ test("channel-only shares discover EPG without items and respect boundaries and 
 test("channel overlaps choose latest start then largest ID", async () => {
   const { db, preview } = fixture();
   try {
-    db.exec(`INSERT INTO epg_programs VALUES (13, 1, 'Overlap', 210, 290, NULL), (14, 1, 'Tie', 210, 290, NULL), (15, 1, 'Older', 205, 290, NULL)`);
+    db.exec(`INSERT INTO epg_programs (id, channel_id, title, start_at, end_at, icon) VALUES (13, 1, 'Overlap', 210, 290, NULL), (14, 1, 'Tie', 210, 290, NULL), (15, 1, 'Older', 205, 290, NULL)`);
     assert.equal((await preview('channel')).body.preview.programme.id, 14);
   } finally { db.close(); }
 });
@@ -78,10 +80,10 @@ test("programme and static shares normalize the actual active item's channel and
   const { db, preview } = fixture();
   try {
     assert.deepEqual((await preview('programmes')).body, { preview: { channel_name: 'Second', programme: {
-      id: 12, title: 'Selected', start_at: 200, end_at: 300, icon_url: 'https://images.example/selected.jpg',
+      id: 12, title: 'Selected', start_at: 200, end_at: 300, icon_url: 'https://images.example/selected.jpg', description: null,
     } } });
     assert.deepEqual((await preview('static')).body, { preview: { channel_name: 'Second', programme: {
-      id: 20, title: 'Static event', start_at: 200, end_at: 300, icon_url: 'https://images.example/event.jpg',
+      id: 20, title: 'Static event', start_at: 200, end_at: 300, icon_url: 'https://images.example/event.jpg', description: null,
     } } });
     for (const slug of ['programmes', 'static']) {
       assert.equal((await preview(slug, 199)).body.preview.programme, null);
@@ -154,7 +156,7 @@ test("HTTP routes require admin sessions for issuance/revocation and preview-sco
     const body = await response.json();
     assert.deepEqual(Object.keys(body), ['preview']);
     assert.deepEqual(Object.keys(body.preview), ['channel_name', 'programme']);
-    assert.deepEqual(Object.keys(body.preview.programme), ['id', 'title', 'start_at', 'end_at', 'icon_url']);
+    assert.deepEqual(Object.keys(body.preview.programme), ['id', 'title', 'start_at', 'end_at', 'icon_url', 'description']);
     assert.ok(!JSON.stringify(body).includes('stream_url'));
     assert.ok(!JSON.stringify(body).includes('source.example'));
     assert.ok(!JSON.stringify(body).includes(issued.secret));
@@ -254,4 +256,51 @@ test("signed artwork is accessible without keys, bound to share/item/source, and
     await Promise.all([new Promise(resolve => server.close(resolve)), new Promise(resolve => imageServer.close(resolve))]);
     db.close();
   }
+});
+
+test("all share types return their active item's full stored description without truncation", async () => {
+  const { db, preview } = fixture();
+  try {
+    const longDescription = "A programme's full synopsis — with Unicode and line breaks.\n".repeat(8);
+    const cases = [
+      ['channel', 'epg_programs', 11, longDescription],
+      ['programmes', 'epg_programs', 12, `Selected programme: ${longDescription}`],
+      ['static', 'static_share_events', 20, `Scheduled event: ${longDescription}`],
+    ];
+    for (const [slug, table, id, description] of cases) {
+      db.prepare(`UPDATE ${table} SET description = ? WHERE id = ?`).run(description, id);
+      const result = (await preview(slug)).body.preview.programme;
+      assert.equal(result.id, id);
+      assert.equal(result.description, description);
+      assert.ok(result.description.length > 128);
+    }
+  } finally { db.close(); }
+});
+
+test("missing descriptions are explicitly null for channel, programme and scheduled shares", async () => {
+  const { db, preview } = fixture();
+  try {
+    for (const slug of ['channel', 'programmes', 'static']) {
+      const result = (await preview(slug)).body.preview.programme;
+      assert.ok(Object.hasOwn(result, 'description'));
+      assert.equal(result.description, null);
+    }
+    db.prepare('UPDATE epg_programs SET description = ? WHERE id = 11').run('');
+    assert.equal((await preview('channel')).body.preview.programme.description, '');
+  } finally { db.close(); }
+});
+
+test("channel descriptions advance with the current EPG programme at its exact boundary", async () => {
+  const { db, preview } = fixture();
+  try {
+    db.prepare('UPDATE epg_programs SET description = ? WHERE id = 10').run('Earlier programme synopsis');
+    db.prepare('UPDATE epg_programs SET description = ? WHERE id = 11').run('Next programme synopsis');
+    const earlier = (await preview('channel', 199)).body.preview.programme;
+    assert.equal(earlier.id, 10);
+    assert.equal(earlier.description, 'Earlier programme synopsis');
+    const next = (await preview('channel', 200)).body.preview.programme;
+    assert.equal(next.id, 11);
+    assert.equal(next.description, 'Next programme synopsis');
+    assert.equal((await preview('channel', 300)).body.preview.programme, null);
+  } finally { db.close(); }
 });

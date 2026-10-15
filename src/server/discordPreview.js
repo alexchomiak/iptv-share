@@ -89,7 +89,8 @@ function programme(row, current, imageUrl = (row) => publicImageUrl(row.icon)) {
   const start = row.start_at ?? row.starts_at;
   const end = row.end_at ?? row.ends_at;
   if (!(start <= current && current < end)) return null;
-  return { id: row.id, title: row.title, start_at: start, end_at: end, icon_url: imageUrl(row) };
+  return { id: row.id, title: row.title, start_at: start, end_at: end, icon_url: imageUrl(row),
+    description: typeof row.description === "string" ? row.description : null };
 }
 
 export async function sharePreview(db, slug, current, { unlocked, activeProgram, activeEvent, imageUrl }) {
@@ -115,7 +116,7 @@ export async function sharePreview(db, slug, current, { unlocked, activeProgram,
     if (row) row = db.prepare(`SELECT epg_programs.*, channels.name AS channel_name
       FROM epg_programs JOIN channels ON channels.id = epg_programs.channel_id WHERE epg_programs.id = ?`).get(row.id);
   } else if (share.starts_at <= current) {
-    row = db.prepare(`SELECT id, title, start_at, end_at, icon FROM epg_programs
+    row = db.prepare(`SELECT id, title, description, start_at, end_at, icon FROM epg_programs
       WHERE channel_id = ? AND start_at <= ? AND ? < end_at
       ORDER BY start_at DESC, id DESC LIMIT 1`).get(share.channel_id, current, current);
   }

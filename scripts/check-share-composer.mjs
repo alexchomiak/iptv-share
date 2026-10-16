@@ -1,0 +1,64 @@
+import express from 'express';
+import puppeteer from 'puppeteer';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+const root=fileURLToPath(new URL('..',import.meta.url)).replace(/\/$/,'');
+const app=express();app.use(express.json());
+const channels=Array.from({length:15},(_,i)=>({id:i+1,name:['ESPN','Boomerang','Disney Channel','Nickelodeon'][i%4]+` ${i+1}`,group_name:'TV',channel_number:String(i+1),logo:null}));
+const game={id:'london-game',name:'Texans at Jaguars',shortName:'HOU @ JAX',date:'2026-10-18T13:30:00Z',status:'Scheduled'};
+const attempts=[], added=[];let epgAttempts=0;
+app.get('/api/me',(_q,r)=>r.json({authenticated:true}));
+app.get('/api/channels',(_q,r)=>r.json({channels}));
+app.get('/api/state',(_q,r)=>r.json({channels:channels.length,programs:10000}));
+app.get('/api/shares',(_q,r)=>r.json({shares:[{id:1,kind:'static',title:'Sunday Sports',slug:'sunday-sports',admin_ref:'static-1'}]}));
+app.get('/api/sports/espn/search',(_q,r)=>r.json({games:[game],cache:'hit',requestsToday:0}));
+app.get('/api/epg',(q,r)=>{const programs=[];for(const id of String(q.query.channelIds).split(',').map(Number)){for(let time=Number(q.query.start);time<Number(q.query.end);time+=1800)programs.push({id:time/1800*100+id,channel_id:id,channel_name:channels[id-1].name,title:'Programme '+time/1800,start_at:time,end_at:time+1800,description:'Local UI check'});}r.json({programs})});
+app.post('/api/static-shares/:id/events',(q,r)=>{attempts.push(q.body);if(q.body.programId&&++epgAttempts===2)return r.status(500).json({error:'Temporary fixture failure'});added.push(q.body);r.json({event:{id:added.length}})});
+app.post('/api/shares',(_q,r)=>r.json({url:'/s/local-link'}));
+app.use(express.static(root+'/dist'));app.get('*',(_q,r)=>r.sendFile(root+'/dist/index.html'));
+const server=app.listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));
+const launchOptions={headless:true};
+if(process.env.CHROME_PATH) launchOptions.executablePath=process.env.CHROME_PATH;
+const browser=await puppeteer.launch(launchOptions);const page=await browser.newPage();await page.setViewport({width:1280,height:900});
+const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const clickText=async(selector,text)=>{const elements=await page.$$(selector);for(const el of elements){if((await el.evaluate(e=>e.textContent)).trim()===text){await el.click();return;}}throw new Error('Missing control: '+text)};
+const fill=async(selector,value)=>page.$eval(selector,(el,value)=>{el.value=value;el.dispatchEvent(new Event('input',{bubbles:true}));},value);
+try{
+ await page.goto(`http://127.0.0.1:${server.address().port}`,{waitUntil:'networkidle0'});
+ await page.waitForSelector('.event');await page.click('.channelCell');await page.click('.floatingCreateShare');
+ const dialog=await page.$('dialog');
+ await page.click('.shareDestination label:nth-of-type(2)');await page.waitForSelector('.inlineScheduleFields');
+ assert.equal(await dialog.evaluate(el=>el.isConnected),true);
+ await page.select('.inlineScheduleFields select','1');
+ await fill('input[type="datetime-local"]:first-of-type','2026-10-18T08:00');
+ // Date inputs live in separate labels; select both explicitly.
+ await page.$$eval('input[type="datetime-local"]',els=>{for(const [i,el]of els.entries()){el.value=i?'2026-10-18T12:00':'2026-10-18T08:00';el.dispatchEvent(new Event('input',{bubbles:true}));}});
+ await page.click('.shareDestination label:nth-of-type(1)');await page.waitForSelector('input[placeholder="Optional display title"]');
+ await page.type('input[placeholder="Optional display title"]','My selection');
+ await page.click('.shareDestination label:nth-of-type(2)');await page.waitForSelector('.inlineScheduleFields');
+ assert.equal(await dialog.evaluate(el=>el.isConnected),true);
+ assert.deepEqual(await page.$$eval('input[type="datetime-local"]',els=>els.map(el=>el.value)),['2026-10-18T08:00','2026-10-18T12:00']);
+ assert.equal(await page.$eval('.inlineScheduleFields select',el=>el.value),'1');
+ await fs.mkdir(root+'/artifacts',{recursive:true});await page.screenshot({path:root+'/artifacts/unified-share-modal.jpg',type:'jpeg',quality:85});
+ await page.click('.createShareActions .primary');await page.waitForFunction(()=>document.querySelector('[role="status"]')?.textContent.includes('Added 1 event'));
+ assert.equal(added.length,1);assert.equal(added[0].espn,null);assert.equal(added[0].title,'My selection');assert.equal(added[0].endsAt-added[0].startsAt,4*3600);
+ assert.equal(await page.$eval('dialog',el=>el.open),true);assert.equal(new URL(page.url()).pathname,'/');assert.equal(await page.$eval('.createShareActions .primary',el=>el.disabled),true);
+ await page.click('button[aria-label="Close Create Share"]');
+ const row=await page.$('.guideRow');const buttons=await row.$$('.event');
+ // Pick two currently visible programmes from the same channel.
+ const visible=[];for(const button of buttons){const box=await button.boundingBox();if(box&&box.x>260&&box.x+box.width<1250)visible.push(button);}
+ await visible[0].click();await visible[1].click();await page.click('.floatingCreateShare');
+ assert.equal(await page.$$eval('.selectedProgrammeList article',els=>els.length),2);
+ await page.click('.createShareActions .primary');await page.waitForFunction(()=>document.querySelector('[role="status"]')?.textContent.includes('Temporary fixture failure'));
+ await page.click('.createShareActions .primary');await page.waitForFunction(()=>document.querySelector('[role="status"]')?.textContent.includes('Added 2 events'));
+ const progAttempts=attempts.filter(x=>x.programId);assert.equal(progAttempts.length,3);assert.equal(added.filter(x=>x.programId).length,2);
+ assert.notEqual(progAttempts[0].programId,progAttempts[2].programId);
+ await clickText('.selectedProgrammeList button','Use a channel time window instead');await page.click('.sportsLinkOptions summary');await page.type('input[placeholder="Team or matchup"]','Texans');await page.click('.inlineSportsSearch > button');await page.waitForSelector('.espnResults button');await page.click('.espnResults button');
+ assert.equal(await page.$$('input[type="datetime-local"]').then(els=>els.length),0);
+ await page.click('.createShareActions .primary');await page.waitForFunction(()=>document.querySelector('[role="status"]')?.textContent.includes('Added 1 event'));
+ assert.equal(added.at(-1).espn.id,game.id);assert.equal(added.at(-1).startsAt,Date.parse(game.date)/1000);
+ await page.keyboard.press('Escape');assert.equal(await page.$('dialog'),null);
+ assert.deepEqual(errors,[]);
+ console.log(JSON.stringify({checks:'single persistent dialog, retained drafts/times, channel scheduling, EPG scheduling, partial-failure retry, ESPN linking, inline success, Escape',passed:true,confirmedEvents:added.length,pageErrors:errors.length,screenshot:root+'/artifacts/unified-share-modal.jpg'}));
+}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}

@@ -4017,3 +4017,90 @@ h2 {
     font-size: 34px;
   }
 }
+
+/* The guide owns the viewport; sharing tools float above it. */
+.appShell {
+  grid-template-areas: "guideHeader" "workspace";
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100dvh;
+}
+.guidePageHeader { gap: 12px; padding: 16px 20px; }
+.guideCommandBar { display: block; padding: 0; border: 0; background: transparent; }
+.guideCommandBar .searchBox label { font-size: 0; gap: 0; }
+.guideCommandBar input[type="search"] { height: 46px; padding-inline: 16px; font-size: 14px; }
+.virtualGuide { position: relative; }
+.virtualGuide .guideScroller { --guide-channel-width: 255px; overscroll-behavior: contain; overflow-anchor: none; }
+.virtualGuide .guideHeader, .virtualGuide .guideRow { grid-template-columns: var(--guide-channel-width) 1fr; }
+.virtualGuide .channelHeader, .virtualGuide .channelCell { width: var(--guide-channel-width); }
+.virtualGuide .guideHeader { z-index: 6; }
+.virtualGuide .channelHeader { gap: 10px; justify-content: space-between; text-transform: none; }
+.virtualGuide .channelHeader small { display: block; margin-top: 3px; font-size: 11px; font-weight: 400; }
+.virtualGuide .channelHeader button { padding: 5px 8px; font-size: 11px; white-space: nowrap; }
+.virtualGuide .programLane { overflow: hidden; }
+.guideEmpty { position: absolute; top: 85px; left: 32px; color: var(--muted); pointer-events: none; }
+.guideLoadStatus { position: absolute; z-index: 8; top: 60px; right: 20px; background: #19232f; border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; color: var(--muted); font-size: 12px; }
+.floatingCreateShare {
+  position: fixed; z-index: 75; left: 50%; bottom: calc(22px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  width: 60%; min-height: 54px; display: flex; align-items: center; justify-content: center; gap: 12px;
+  border-radius: 12px; font-size: 16px; font-weight: 800; box-shadow: 0 8px 32px #0008, 0 2px 10px #0005;
+}
+.floatingCreateShare > span { font-size: 23px; line-height: 1; }
+.floatingCreateShare small { padding: 4px 8px; border-radius: 5px; background: #0002; font-size: 11px; }
+.appShell > .eventPeek { position: fixed; z-index: 65; bottom: 94px; right: 20px; width: min(480px, calc(100vw - 40px)); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 10px 35px #0009; }
+.guideModal {
+  margin: auto; padding: 0; width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 48px);
+  overflow: auto; color: var(--text); background: #171e28; border: 1px solid #3b4859; border-radius: 16px; box-shadow: 0 24px 100px #000a;
+}
+.guideModal::backdrop { background: #080c14b8; backdrop-filter: blur(5px); }
+.guideModalHeader { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; background: #171e28; border-bottom: 1px solid var(--line); }
+.guideModalHeader h2 { font-size: 21px; }
+.guideModalHeader button { border: 0; background: transparent; color: var(--muted); padding: 6px 10px; }
+.createShareForm { display: grid; gap: 18px; padding: 22px 24px 24px; }
+.createShareForm label { min-width: 0; gap: 7px; font-size: 13px; }
+.createShareForm input, .createShareForm select { width: 100%; min-width: 0; }
+.createShareForm .selectionSummary p { color: var(--muted); margin-top: 5px; line-height: 1.5; }
+.shareTimeFields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.shareAdvanced { border: 1px solid var(--line); border-radius: 9px; }
+.shareAdvanced summary { cursor: pointer; padding: 14px; font-size: 13px; font-weight: 600; }
+.shareAdvancedFields { display: grid; gap: 14px; padding: 0 14px 14px; }
+.fieldHint { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.selectedProgrammeList { display: grid; gap: 10px; max-height: 230px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.selectedProgrammeList article { display: grid; gap: 4px; }
+.selectedProgrammeList small { color: var(--muted); }
+.createShareActions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding-top: 6px; }
+.createShareActions .primary { margin-left: auto; }
+.shareModalResult { display: grid; gap: 10px; padding: 14px; border: 1px solid #31c48d66; background: #31c48d0a; border-radius: 9px; overflow-wrap: anywhere; }
+.shareModalResult button { justify-self: start; }
+@media (max-width: 700px) {
+  .virtualGuide .guideScroller { --guide-channel-width: 170px; }
+  .guideHeaderTop { flex-direction: row; align-items: center; gap: 10px; }
+  .guidePageHeader { padding: 12px; }
+  .guideTitleBlock h1 { font-size: 19px; }
+  .guideTitleBlock p { font-size: 11px; }
+  .guideHeaderTop .toolbar { gap: 5px; }
+  .guideHeaderTop .toolbar button { padding: 7px 8px; font-size: 11px; }
+  .virtualGuide .channelHeader { padding: 0 9px; }
+  .virtualGuide .channelHeader button { padding: 4px; font-size: 10px; }
+  .floatingCreateShare { min-height: 50px; gap: 7px; font-size: 14px; }
+  .floatingCreateShare small { font-size: 9px; padding: 3px 5px; }
+  .guideModalHeader { padding: 16px; }
+  .createShareForm { padding: 18px 16px; }
+  .shareTimeFields { grid-template-columns: 1fr; }
+  .createShareActions button { flex: 1; font-size: 12px; padding-inline: 10px; }
+}
+
+.shareDestination { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; border: 0; padding: 0; min-width: 0; }
+.shareDestination legend { margin-bottom: 9px; color: var(--muted); font-size: 12px; }
+.shareDestination label { display: flex; flex-direction: row; align-items: center; gap: 10px; border: 1px solid var(--line); border-radius: 9px; padding: 13px; cursor: pointer; background: #101720; }
+.shareDestination label:has(input:checked) { border-color: var(--accent); background: #31c48d12; }
+.shareDestination input[type="radio"] { width: 16px; height: 16px; padding: 0; flex-shrink: 0; accent-color: var(--accent); }
+.shareDestination strong, .shareDestination small { display: block; }
+.shareDestination small { color: var(--muted); font-size: 11px; margin-top: 4px; }
+.inlineScheduleFields { display: grid; gap: 15px; }
+.inlineSportsSearch { display: grid; grid-template-columns: 115px minmax(0, 1fr); gap: 10px; align-items: end; }
+.inlineSportsSearch > button { grid-column: 1 / -1; }
+.inlineScheduleFields .espnResults { max-height: 220px; overflow: auto; }
+.linkedSportsGame { display: grid; gap: 7px; padding: 12px; border: 1px solid #31c48d77; border-radius: 8px; background: #31c48d0c; }
+.linkedSportsGame small { color: var(--muted); }
+.linkedSportsGame button { justify-self: start; }
+@media (max-width: 450px) { .shareDestination { grid-template-columns: 1fr; } }

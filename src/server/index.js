@@ -11,6 +11,7 @@ import { db, initDb } from "./db.js";
 import { refreshSources } from "./importers.js";
 import { cleanExpiredEspnSnapshots } from "./snapshotCleanup.js";
 import { generatedNflMappings, generatedNflXmltv } from "./nflEpg.js";
+import { loadGuidePrograms } from "./guidePrograms.js";
 import { addPlatformMediaSource } from "./platformSources.js";
 import { publicStreamUrls, registerSignedViewer } from "./publicPlayback.js";
 import { findActiveShareProgram as selectActiveShareProgram } from "./sharePrograms.js";
@@ -1483,17 +1484,13 @@ app.get("/api/epg/nfl-m3u/preview", requireAuth, async (_req, res) => {
 app.get("/api/epg", requireAuth, (req, res) => {
   const start = Number(req.query.start || now() - 3600);
   const end = Number(req.query.end || now() + 21600);
-  const programs = db
-    .prepare(
-      `
-      SELECT epg_programs.*, channels.name AS channel_name
-      FROM epg_programs
-      LEFT JOIN channels ON channels.id = epg_programs.channel_id
-      WHERE end_at > ? AND start_at < ?
-      ORDER BY start_at
-    `,
-    )
-    .all(start, end);
+  let programs;
+  try {
+    programs = loadGuidePrograms(db, start, end, req.query.channelIds);
+  } catch (error) {
+    if (error.message.startsWith("Invalid ")) return res.status(400).json({ error: error.message });
+    throw error;
+  }
   res.json({
     programs: programs.map((program) => ({
       ...program,

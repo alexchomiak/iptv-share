@@ -12,7 +12,11 @@ A Node + React single-container web app for browsing an IPTV XMLTV guide, select
 - M3U playlist import
 - XMLTV EPG import
 - Channel guide explorer
-- 8-hour default guide window with 6-hour, 24-hour, and 48-hour paging
+- Continuous horizontal guide scrolling with virtualized channel rows and programme cells
+- Visible-window EPG loading with bounded channel/time blocks and a capped cache
+- Floating Create Share button with a modal for channel time windows and programme selections
+- One share modal for standalone links and adding events to static schedules, with optional ESPN linking
+- Expandable advanced share settings
 - Current-time marker in the guide
 - Whole-guide EPG search with jump-to-event results
 - Event detail panel with full title, description, and available EPG artwork
@@ -254,3 +258,10 @@ group_add:
 ```
 
 Inside the running container, `vainfo --display drm --device /dev/dri/renderD128` should list supported VAAPI profiles, and `ffmpeg -hide_banner -encoders | grep vaapi` should include `h264_vaapi`.
+
+### Share composer checks
+
+Run `npm run check:share-composer` after a production build to check the unified modal against an isolated local fixture.
+It verifies retained selections and draft values, channel and EPG scheduling, optional ESPN linking, partial-failure retries, and inline success.
+Puppeteer uses its installed test browser; set `CHROME_PATH` to an existing Chrome executable if needed.
+The check writes a screenshot under `artifacts/` and does not create real shares.
